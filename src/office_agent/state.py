@@ -1,0 +1,27 @@
+"""LangGraph 状态定义（ReAct agent 极简版）。
+
+ReAct agent 的核心是 messages 列表（LLM 与工具的消息往返）。
+外加少量控制字段：
+    - doc_path: 会话文档路径（main.py 注入，供工具读取）
+    - done: finish 工具触发后置 true，路由到 END
+"""
+
+from __future__ import annotations
+
+from typing import TypedDict
+
+from langgraph.graph.message import add_messages
+from typing_extensions import Annotated
+
+
+class AgentState(TypedDict, total=False):
+    """ReAct agent 状态。total=False 让节点可只更新部分字段。"""
+
+    # 消息往返：LLM 输出(AIMessage) + 工具结果(ToolMessage) 累积于此
+    messages: Annotated[list, add_messages]
+    # 会话文档路径（main.py 启动时注入，工具内部读取）
+    doc_path: str
+    # 是否完成（finish 工具置 true）
+    done: bool
+    # finish 时 LLM 给的总结
+    summary: str

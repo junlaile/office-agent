@@ -1,0 +1,436 @@
+"""OfficeCLI 的 Python 封装：subprocess 调用 + 结构化工具集。
+
+经实测验证的关键点（officecli v1.0.138）:
+    - subprocess 必须用 encoding='utf-8'，且 JSON 通过 --commands argv 传递
+      （stdin 传中文 JSON 会被误解析；shell echo 也会转码）。
+    - 默认 create 的 docx 只有 Normal 样式，Heading1/Title/ListBullet 不存在，
+      因此本封装层用【显式格式 props】(size/bold/color/font/listStyle) 而非命名样式，
+      确保 Word 打开时格式真实生效。
+    - 表格元素路径是 /body/tbl[N]/tr[N]/tc[N]（注意是 tbl/tr/tc，不是 table/row/cell）。
+    - 设置 OFFICECLI_NO_AUTO_RESIDENT=1 避免后台常驻进程文件锁。
+
+设计:
+    - 文本一律通过 argv 参数数组传递，绝不拼 shell 字符串，杜绝注入。
+    - 写入优先用 batch（--commands JSON），失败整体回滚；add_table 内部用 batch 写单元格。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass, field
+from typing import Any
+
+from .config import settings
+
+
+class OfficeCLIError(RuntimeError):
+    """officecli 调用失败。"""
+
+    def __init__(self, message: str, *, cmd: list[str] | None = None,
+                 returncode: int | None = None, stderr: str | None = None) -> None:
+        super().__init__(message)
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def resolve_bin() -> str:
+    """按优先级解析 officecli 可执行文件路径。
+
+    1. 环境变量 OFFICECLI_BIN
+    2. 工程内 bin/officecli 或 bin/officecli.exe
+    3. PATH 中的 officecli
+    """
+    explicit = settings.officecli_bin.strip()
+    if explicit:
+        p = os.path.normpath(explicit)
+        if os.path.exists(p):
+            return p
+        found = shutil.which(explicit)
+        if found:
+            return found
+        raise OfficeCLIError(f"OFFICECLI_BIN 指定的路径不存在: {explicit}")
+
+    candidates = [
+        settings.project_root / "bin" / "officecli.exe",
+        settings.project_root / "bin" / "officecli",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+
+    found = shutil.which("officecli") or shutil.which("officecli.exe")
+    if found:
+        return found
+
+    raise OfficeCLIError(
+        "找不到 officecli 可执行文件。请执行:\n"
+        "    python scripts/fetch_officecli.py\n"
+        "下载到工程内 bin/，或在 .env 中设置 OFFICECLI_BIN 指向已有二进制。",
+    )
+
+
+@dataclass
+class _Runner:
+    """底层 subprocess 执行器。"""
+
+    bin_path: str = field(default_factory=resolve_bin)
+
+    def run(self, args: list[str], *, json_output: bool = False,
+            timeout: int | None = None) -> Any:
+        """执行一条 officecli 命令。
+
+        args: 不含可执行文件本身的参数列表，如 ["create", "a.docx"]
+        json_output: 是否追加 --json 并解析返回值
+        返回: json_output=True 时返回解析后的对象；否则返回 stdout 文本
+        """
+        cmd = [self.bin_path, *args]
+        if json_output and "--json" not in args:
+            cmd.append("--json")
+
+        env = dict(os.environ)
+        # 关闭常驻模式，避免文件锁/后台进程干扰（每条命令独立 open/save）
+        env.setdefault("OFFICECLI_NO_AUTO_RESIDENT", "1")
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",  # 强制 UTF-8，避免 Windows GBK 乱码
+                timeout=timeout or settings.officecli_timeout,
+                check=False,
+            )
+        except FileNotFoundError as e:
+            raise OfficeCLIError(f"无法执行 officecli: {e}", cmd=cmd) from e
+        except subprocess.TimeoutExpired as e:
+            raise OfficeCLIError(
+                f"officecli 命令超时（{e.timeout}s）: {' '.join(args[:3])}...",
+                cmd=cmd,
+            ) from e
+
+        if proc.returncode != 0:
+            raise OfficeCLIError(
+                f"officecli 返回非零状态 {proc.returncode}: {' '.join(args[:4])}\n"
+                f"stderr: {proc.stderr.strip()}",
+                cmd=cmd,
+                returncode=proc.returncode,
+                stderr=proc.stderr.strip(),
+            )
+
+        stdout = proc.stdout
+        if json_output:
+            stripped = stdout.strip()
+            if not stripped:
+                return None
+            try:
+                return json.loads(stripped)
+            except json.JSONDecodeError:
+                return stdout
+        return stdout
+
+
+# 模块级单例（延迟初始化，避免 import 时就要求二进制存在）
+_runner: _Runner | None = None
+
+
+def get_runner() -> _Runner:
+    global _runner
+    if _runner is None:
+        _runner = _Runner()
+    return _runner
+
+
+def reset_runner(bin_path: str | None = None) -> None:
+    """重置 runner，供测试或显式指定路径时使用。"""
+    global _runner
+    _runner = _Runner(bin_path=bin_path) if bin_path else _Runner()
+
+
+# ============================================================
+# 受限逃生口：白名单 raw
+# ============================================================
+_RAW_WHITELIST = {
+    "create", "add", "set", "get", "query", "view",
+    "close", "open", "save", "validate", "batch",
+}
+
+
+def raw(command_args: list[str], *, json_output: bool = False) -> Any:
+    """受限逃生口：允许调用白名单内的子命令。
+
+    command_args: 不含可执行文件的完整参数，如 ["view", "a.docx", "outline"]
+    第一个元素必须是白名单中的子命令名。
+    """
+    if not command_args:
+        raise OfficeCLIError("raw 调用不能为空")
+    sub = command_args[0]
+    if sub not in _RAW_WHITELIST:
+        raise OfficeCLIError(
+            f"raw 子命令 '{sub}' 不在白名单内，允许: {sorted(_RAW_WHITELIST)}",
+        )
+    return get_runner().run(command_args, json_output=json_output)
+
+
+# ============================================================
+# 面向文档的高层工具：DocTool
+# ============================================================
+# 标题字号映射（Word 约定，H1 最大），用显式 size 替代命名样式
+_HEADING_SIZE_PT = {1: 22, 2: 18, 3: 15, 4: 13.5, 5: 12, 6: 11, 7: 11, 8: 11, 9: 11}
+_TITLE_SIZE_PT = 26
+
+
+@dataclass
+class DocTool:
+    """绑定单个文档路径的结构化操作工具。
+
+    供 LangGraph 节点直接调用，语义清晰，内部翻译为 officecli 命令。
+    所有格式用显式 props（size/bold/color/listStyle）确保 Word 真实生效，
+    不依赖默认 docx 缺失的命名样式。
+    """
+
+    doc_path: str
+
+    @property
+    def runner(self) -> _Runner:
+        return get_runner()
+
+    # ---- 生命周期 ----
+    def create(self) -> str:
+        """创建空文档（若已存在会被覆盖）。"""
+        return self.runner.run(["create", self.doc_path, "--force"])
+
+    def close(self) -> str:
+        """刷盘并释放（关闭常驻会话）。"""
+        return self.runner.run(["close", self.doc_path])
+
+    # ---- 写入 ----
+    def add_title(self, text: str) -> str:
+        """加文档主标题。显式大字号 + 加粗，居中。"""
+        return self.runner.run([
+            "add", self.doc_path, "/body", "--type", "paragraph",
+            "--prop", f"text={text}",
+            "--prop", f"size={_TITLE_SIZE_PT}",
+            "--prop", "bold=true",
+            "--prop", "align=center",
+        ])
+
+    def add_heading(self, text: str, level: int = 1) -> str:
+        """加章节标题。level 1-9，字号递减、加粗。"""
+        level = max(1, min(9, int(level)))
+        size = _HEADING_SIZE_PT[level]
+        return self.runner.run([
+            "add", self.doc_path, "/body", "--type", "paragraph",
+            "--prop", f"text={text}",
+            "--prop", f"size={size}",
+            "--prop", "bold=true",
+            "--prop", "spaceBefore=12pt",
+            "--prop", "spaceAfter=6pt",
+        ])
+
+    def add_paragraph(self, text: str, *, bold: bool = False,
+                      italic: bool = False, size: float | None = None) -> str:
+        """加正文段落。"""
+        props = [f"text={text}"]
+        if bold:
+            props.append("bold=true")
+        if italic:
+            props.append("italic=true")
+        if size is not None:
+            props.append(f"size={size}")
+        args = ["add", self.doc_path, "/body", "--type", "paragraph"]
+        for p in props:
+            args += ["--prop", p]
+        return self.runner.run(args)
+
+    def add_list_item(self, text: str, *, ordered: bool = False) -> str:
+        """加列表项。用 listStyle=bullet/ordered（实测有效）。"""
+        style = "ordered" if ordered else "bullet"
+        return self.runner.run([
+            "add", self.doc_path, "/body", "--type", "paragraph",
+            "--prop", f"text={text}",
+            "--prop", f"listStyle={style}",
+        ])
+
+    def add_table(self, data: list[list[str]], *, has_header: bool = True) -> Any:
+        """加表格。data 是二维字符串数组。
+
+        实现: add table 建空表 → 查询新表真实索引 → batch 逐单元格写入。
+
+        为什么不用 --prop data 一步创建: officecli 的 data CSV 格式【不支持
+        引号转义】，单元格内含逗号/分号会被拆成多列（如"50,000"→两列），
+        导致列数错乱。逐单元格 batch 写入对任意内容都安全。
+
+        路径定位: 多表场景下新表索引是递增的（tbl[1]/tbl[2]...），不能写死。
+        每次创建后用 _last_table_index() 查询 body 下最后一个 tbl 的索引，
+        确保写入正确的表。
+        """
+        if not data or not data[0]:
+            raise OfficeCLIError("表格数据为空")
+
+        rows = len(data)
+        cols = max(len(row) for row in data)
+        # 补齐每行长度一致（防 LLM 给出参差不齐的数据）
+        norm = [list(row) + [""] * (cols - len(row)) for row in data]
+
+        # 建表并从输出直接解析新表索引（比 get 查询更可靠，不受图片等结构干扰）
+        add_output = self.runner.run([
+            "add", self.doc_path, "/body", "--type", "table",
+            "--prop", f"rows={rows}",
+            "--prop", f"cols={cols}",
+        ])
+        tbl_index = self._parse_tbl_index(add_output) or self._last_table_index()
+
+        ops = self._build_table_ops(norm, tbl_index, has_header)
+        try:
+            self.batch(ops)
+        except OfficeCLIError:
+            # 重试：重新查询索引（兜底），重建 ops
+            tbl_index = self._last_table_index()
+            ops2 = self._build_table_ops(norm, tbl_index, has_header)
+            try:
+                self.batch(ops2)
+            except OfficeCLIError:
+                # 仍失败：逐单元格写（非原子，但保证尽量写入）
+                for op in ops2:
+                    try:
+                        self.batch([op])
+                    except OfficeCLIError:
+                        pass  # 单个单元格失败不阻断其余
+
+        return f"已添加 {rows} 行 × {cols} 列的表格"
+
+    @staticmethod
+    def _parse_tbl_index(output: str) -> int:
+        """从 'add table' 的输出 'Added table at /body/tbl[N]' 解析索引 N。
+        解析失败返回 0。"""
+        import re
+        m = re.search(r"tbl\[(\d+)\]", output or "")
+        return int(m.group(1)) if m else 0
+
+    @staticmethod
+    def _build_table_ops(norm: list[list[str]], tbl_index: int,
+                         has_header: bool) -> list[dict]:
+        """构造写表格单元格的 batch ops。tbl_index 1-based。"""
+        if tbl_index <= 0:
+            tbl_index = 1
+        ops: list[dict] = []
+        for r, row in enumerate(norm):
+            for c, cell in enumerate(row):
+                props: dict[str, str] = {"text": str(cell)}
+                if has_header and r == 0:
+                    props["bold"] = "true"
+                ops.append({
+                    "command": "set",
+                    "path": f"/body/tbl[{tbl_index}]/tr[{r + 1}]/tc[{c + 1}]",
+                    "props": props,
+                })
+        return ops
+
+    def _last_table_index(self) -> int:
+        """查询 /body 下最后一个 table 的索引（1-based）。无表返回 0。"""
+        try:
+            data = self.runner.run(
+                ["get", self.doc_path, "/body", "--depth", "1"],
+                json_output=True,
+            )
+            children = (
+                data.get("data", {}).get("results", [{}])[0].get("children", [])
+                if isinstance(data, dict) else []
+            )
+            tbl_indices = [
+                int(p.split("tbl[")[1].rstrip("]"))
+                for c in children
+                if (p := c.get("path", "")) and "tbl[" in p
+            ]
+            return max(tbl_indices) if tbl_indices else 0
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def batch(self, ops: list[dict]) -> Any:
+        """批量原子操作。ops 见 officecli batch 文档。
+
+        JSON 通过 --commands argv 传递（实测：stdin 传中文 JSON 会乱码/失败，
+        argv 传递稳定且 UTF-8 round-trip 正确）。
+        """
+        payload = json.dumps(ops, ensure_ascii=False)
+        return self.runner.run(
+            ["batch", self.doc_path, "--commands", payload, "--json"],
+        )
+
+    def add_image(self, src: str, *, width: str = "8cm",
+                  alt: str = "", caption: str = "") -> str:
+        """插入图片到文档末尾。
+
+        实现: picture 元素的 parent 必须是 paragraph（不是 body），所以
+        先加一个段落承载图片，再把图片插入该段落。
+
+        参数:
+            src: 图片来源。本地文件路径 / URL / data URI 均可（officecli 支持）。
+            width: 显示宽度（如 '8cm'/'400px'/'3in'）。高度按比例。
+            alt: 图片替代文本（无障碍 + 图片加载失败时显示）。
+            caption: 可选图注。非空时在图片下方加一段居中的图注文字。
+        """
+        # 1) 先加一个空段落作为图片的 parent
+        self.runner.run([
+            "add", self.doc_path, "/body", "--type", "paragraph",
+        ])
+        # 2) 定位刚加的段落（body 下最后一个 p）
+        p_index = self._last_paragraph_index()
+        if p_index <= 0:
+            p_index = 1
+        # 3) 把图片插入该段落
+        props = [f"src={src}", f"width={width}"]
+        if alt:
+            props.append(f"alt={alt}")
+        args = ["add", self.doc_path, f"/body/p[{p_index}]", "--type", "picture"]
+        for p in props:
+            args += ["--prop", p]
+        self.runner.run(args)
+
+        # 4) 可选图注
+        if caption:
+            self.add_paragraph(caption, italic=True)  # 简化：图注作为斜体段落
+
+        return f"已插入图片（{width}）" + (f"，图注: {caption}" if caption else "")
+
+    def _last_paragraph_index(self) -> int:
+        """查询 /body 下最后一个 paragraph 的索引（1-based）。无段落返回 0。"""
+        try:
+            data = self.runner.run(
+                ["get", self.doc_path, "/body", "--depth", "1"],
+                json_output=True,
+            )
+            children = (
+                data.get("data", {}).get("results", [{}])[0].get("children", [])
+                if isinstance(data, dict) else []
+            )
+            p_indices = [
+                int(p.split("p[")[1].rstrip("]"))
+                for c in children
+                if (p := c.get("path", "")) and "/p[" in p
+            ]
+            return max(p_indices) if p_indices else 0
+        except Exception:  # noqa: BLE001
+            return 0
+
+    # ---- 读取 ----
+    def view_outline(self) -> str:
+        """读文档大纲。"""
+        return self.runner.run(["view", self.doc_path, "outline"])
+
+    def view_text(self) -> str:
+        """读文档纯文本（含路径标注，便于 review 节点定位）。"""
+        return self.runner.run(["view", self.doc_path, "text"])
+
+    def view_stats(self) -> Any:
+        """读文档统计信息（json）。"""
+        return self.runner.run(["view", self.doc_path, "stats"], json_output=True)
+
+    def validate(self) -> str:
+        """校验文档。"""
+        return self.runner.run(["validate", self.doc_path])
