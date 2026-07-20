@@ -46,10 +46,10 @@ _RESET = "\033[0m"
 
 
 def _banner() -> None:
-    print(f"\n{_BOLD}{_CYAN}╔══════════════════════════════════════════╗\n"
-          f"║   Office Agent — 交互式 Word 生成器       ║\n"
-          f"║   ReAct + DeepSeek tool_calls + OfficeCLI ║\n"
-          f"╚══════════════════════════════════════════╝{_RESET}\n")
+    print(f"\n{_BOLD}{_CYAN}╔══════════════════════════════════════════════╗\n"
+          f"║   Office Agent — 交互式 Office 文档生成器     ║\n"
+          f"║   Word / Excel / PowerPoint · OfficeCLI       ║\n"
+          f"╚══════════════════════════════════════════════╝{_RESET}\n")
 
 
 def _check_officecli() -> bool:
@@ -69,8 +69,11 @@ def _read_requirement() -> str:
         if req:
             print(f"{_DIM}需求: {req}{_RESET}\n")
             return req
-    print(f"{_BOLD}请描述你要生成的 Word 文档（回车提交）:{_RESET}")
-    print(f"{_DIM}例如: 写一份项目周报，包含本周进展、风险、下周计划{_RESET}\n")
+    print(f"{_BOLD}请描述你要生成的 Office 文档（回车提交）:{_RESET}")
+    print(f"{_DIM}支持 Word / Excel / PowerPoint。例如:{_RESET}")
+    print(f"{_DIM}  · 写一份项目周报，包含本周进展、风险、下周计划{_RESET}")
+    print(f"{_DIM}  · 做一份季度销售数据的 Excel 表格，含图表{_RESET}")
+    print(f"{_DIM}  · 做一个 10 页的产品介绍 PPT{_RESET}\n")
     while True:
         try:
             req = input(f"{_CYAN}❯ {_RESET}").strip()
@@ -82,16 +85,66 @@ def _read_requirement() -> str:
         print(f"{_YELLOW}需求不能为空，请重新输入。{_RESET}")
 
 
+# 文档类型推断：关键词 → 扩展名。命中数越多置信度越高。
+_XLSX_KEYWORDS = ["excel", "表格", "报表", "数据表", "工作表", "spreadsheet",
+                  "财务模型", "预算表", "销售数据", "库存表", "工资表"]
+_PPTX_KEYWORDS = ["ppt", "pptx", "幻灯片", "演示", "汇报", "演讲", "宣讲",
+                  "课件", "路演", "deck", "slides", "presentation", "powerpoint"]
+_DOCX_KEYWORDS = ["word", "doc", "文档", "报告", "说明", "方案", "总结",
+                  "周报", "月报", "通知", "规章", "制度", "文章", "论文"]
+
+
+def _infer_doc_kind(requirement: str) -> tuple[str, int]:
+    """从需求关键词推断文档类型。返回 (kind, 命中数)。
+
+    kind ∈ {'docx','xlsx','pptx'}；命中数越高置信度越高（0 表示无明确线索）。
+    平局时优先级 xlsx > pptx > docx（因为 docx 是默认值，能往后让）。
+    """
+    text = requirement.lower()
+    scores = {
+        "xlsx": sum(1 for k in _XLSX_KEYWORDS if k in text),
+        "pptx": sum(1 for k in _PPTX_KEYWORDS if k in text),
+        "docx": sum(1 for k in _DOCX_KEYWORDS if k in text),
+    }
+    kind = max(scores, key=lambda k: (scores[k], {"xlsx": 2, "pptx": 1, "docx": 0}[k]))
+    return kind, scores[kind]
+
+
+def _ask_doc_kind() -> str:
+    """无法从需求推断文档类型时，交互问用户。"""
+    print(f"{_BOLD}{_YELLOW}需要确认要生成的文档类型:{_RESET}")
+    print(f"{_DIM}  1. Word 文档（报告/说明/方案）{_RESET}")
+    print(f"{_DIM}  2. Excel 表格（数据/报表）{_RESET}")
+    print(f"{_DIM}  3. PowerPoint 演示（汇报/演讲）{_RESET}")
+    while True:
+        try:
+            ans = input(f"{_CYAN}选 [1-3] ❯ {_RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{_YELLOW}已取消。{_RESET}")
+            sys.exit(0)
+        if ans in ("1", "word", "w"):
+            return "docx"
+        if ans in ("2", "excel", "e"):
+            return "xlsx"
+        if ans in ("3", "ppt", "pptx", "p"):
+            return "pptx"
+        print(f"{_YELLOW}请输入 1/2/3 或 word/excel/ppt。{_RESET}")
+
+
 def _derive_doc_path(requirement: str) -> str:
-    """从需求生成输出文档路径。"""
+    """从需求生成输出文档路径（含扩展名推断）。"""
     settings.output_dir.mkdir(parents=True, exist_ok=True)
+    kind, score = _infer_doc_kind(requirement)
+    if score == 0:
+        # 没有明确线索，问用户
+        kind = _ask_doc_kind()
     # 提取需求里的中文/字母数字作文件名
     safe = re.sub(r'[\\/:*?"<>|]', "", requirement).strip()
     safe = re.sub(r"\s+", "_", safe)
     # 截断并兜底
     safe = safe[:30] or "document"
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return str((settings.output_dir / f"{safe}_{stamp}.docx").resolve())
+    return str((settings.output_dir / f"{safe}_{stamp}.{kind}").resolve())
 
 
 def _indent(text: str, pad: str = "    ") -> str:
@@ -113,11 +166,11 @@ def _format_tool_call(name: str, args: dict) -> str:
     if name == "add_list_item":
         ordered = args.get("ordered", False)
         return f'add_list_item("{args.get("text", "")}"{", ordered" if ordered else ""})'
-    if name == "add_table":
+    if name == "add_table" or name == "add_slide_table":
         data = args.get("data") or []
         rows = len(data)
         cols = max((len(r) for r in data), default=0)
-        return f"add_table({rows}×{cols})"
+        return f"{name}({rows}×{cols})"
     if name == "add_image":
         cap = args.get("caption", "")
         cap_str = f', caption="{cap}"' if cap else ""
@@ -125,6 +178,38 @@ def _format_tool_call(name: str, args: dict) -> str:
         # 截断长 URL
         src_short = src if len(src) <= 30 else src[:27] + "..."
         return f'add_image("{src_short}"{cap_str})'
+    if name == "add_sheet":
+        return f'add_sheet("{args.get("name", "")}")'
+    if name == "set_cell":
+        return (f'set_cell("{args.get("sheet", "")}", '
+                f'{args.get("ref", "")}, {args.get("value", "")!r})')
+    if name == "set_cells":
+        data = args.get("data") or []
+        rows = len(data)
+        cols = max((len(r) for r in data), default=0)
+        return (f'set_cells("{args.get("sheet", "")}", {rows}×{cols}, '
+                f'start="{args.get("start", "A1")}")')
+    if name == "set_formula":
+        return (f'set_formula("{args.get("sheet", "")}", '
+                f'{args.get("ref", "")}, ={args.get("formula", "")})')
+    if name == "add_excel_chart":
+        return (f'add_excel_chart("{args.get("sheet", "")}", '
+                f'{args.get("chart_type", "")}, {args.get("data_range", "")})')
+    if name == "add_slide":
+        title = args.get("title", "")
+        body = args.get("body_text", "") or ""
+        # 统计正文行数（便于看出 LLM 是否真的写了正文）
+        body_lines = [l for l in body.split("\n") if l.strip()]
+        body_hint = f", 正文{len(body_lines)}行" if body_lines else ", ⚠️无正文"
+        return f'add_slide(title="{title}"{body_hint})'
+    if name == "add_textbox":
+        text = args.get("text", "")
+        preview = text[:25] + ("…" if len(text) > 25 else "")
+        return f'add_textbox("{preview}")'
+    if name == "add_slide_image":
+        src = str(args.get("url_or_path", ""))
+        src_short = src if len(src) <= 30 else src[:27] + "..."
+        return f'add_slide_image("{src_short}")'
     if name == "query_vehicle":
         return f'query_vehicle("{args.get("plate_number", "")}")'
     if name == "ask_user":
