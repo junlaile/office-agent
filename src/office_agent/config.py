@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from dataclasses import dataclass
@@ -55,6 +56,9 @@ class Settings:
     max_iterations: int
     recursion_limit: int  # LangGraph 超级步上限（agent↔tools 往返算 2 步）
 
+    # 日志
+    log_level: str  # DEBUG/INFO/WARNING/ERROR
+
     @property
     def project_root(self) -> Path:
         return _PROJECT_ROOT
@@ -88,11 +92,31 @@ def _load() -> Settings:
         output_dir=output_dir,
         max_iterations=int(env("MAX_ITERATIONS", "2") or 2),
         recursion_limit=int(env("RECURSION_LIMIT", "100") or 100),
+        log_level=env("LOG_LEVEL", "INFO"),
     )
 
 
 # 模块级单例：import 一次即生效
 settings = _load()
+
+
+def setup_logging() -> None:
+    """按 settings.log_level 配置 root logger。
+
+    幂等：重复调用不会叠加 handler（basicConfig 已自带此保证）。
+    任何 `import office_agent.*` 都会经过本模块，因此自动配好日志。
+    """
+    level_name = settings.log_level.strip().upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+# 模块加载即配好日志，使用方零配置
+setup_logging()
 
 
 def assert_llm_ready() -> None:

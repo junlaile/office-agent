@@ -12,9 +12,11 @@ from .config import settings
 
 def get_llm(*, streaming: bool = False) -> ChatOpenAI:
     """构造一个 ChatOpenAI 实例。"""
+    from pydantic import SecretStr
+
     return ChatOpenAI(
         base_url=settings.llm_base_url,
-        api_key=settings.llm_api_key,
+        api_key=SecretStr(settings.llm_api_key),
         model=settings.llm_model,
         temperature=settings.llm_temperature,
         timeout=settings.llm_request_timeout,

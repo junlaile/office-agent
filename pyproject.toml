@@ -33,6 +33,74 @@ OFFICECLI_TIMEOUT = "120"
 OUTPUT_DIR = "./output"
 MAX_ITERATIONS = "2"
 
+# 日志级别: DEBUG/INFO/WARNING/ERROR（默认 INFO）
+LOG_LEVEL = "INFO"
+
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple/"
 default = true
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.22",
+]
+
+# ============================================================
+# 测试 / 质量工具配置
+# ============================================================
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# 默认只跑单测（不碰 officecli.exe 和 LLM API）。
+# 显式跑集成/LLM：uv run pytest -m integration / -m llm / -m ""（全跑）
+addopts = "-ra --strict-markers -m 'not integration and not llm' --cov=office_agent --cov-report=term-missing --cov-fail-under=65"
+markers = [
+    "integration: 真调 officecli.exe 的慢测试（默认 -m 'not integration' 跳过）",
+    "llm: 真调 LLM API 的端到端测试（默认 skip）",
+]
+
+[tool.coverage.run]
+source = ["office_agent"]
+omit = ["*/tests/*", "*/scripts/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "\\.\\.\\.",  # Protocol / 抽象方法体
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+extend-exclude = ["template", "output", "bin", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# 允许：与现有代码风格一致的例外
+ignore = [
+    "E501",   # 行长由 format 管，lint 不重复报
+    "E402",   # 模块级 import 不在文件顶（main.py 的 sys.path hack 后续 import）
+    "E741",   # 模糊变量名 l（cli_ui 里的单字符循环变量）
+    "B008",   # 函数默认值用 Field()（pydantic 惯例）
+    "B007",   # 循环变量未用（如 _stream 里的 node，保留语义）
+    "SIM105", # try/except/pass 与 contextlib.suppress 等价，前者可读性更好
+    "SIM108", # if/else 三元化建议，长表达式三元可读性更差
+    "SIM117", # 嵌套 with 有时可读性更好
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B017"]  # 测试里允许 assert-exception 模式
+
+[tool.mypy]
+python_version = "3.13"
+strict = false
+ignore_missing_imports = true  # langchain/langgraph 无完整类型存根
+warn_unused_ignores = false
+exclude = ["template/", "output/", "bin/", "scripts/"]

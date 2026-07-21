@@ -3,7 +3,13 @@
 当前会话的文档类型（Word/Excel/PowerPoint）由 main.py 根据扩展名注入，
 提示词据此走对应的工作流分支。三种格式的工具集有差异（见下文），
 但通用工具（create_doc/add_table/view_text/validate_doc/add_image）三格式共用。
+
+公文模式：当 main.py 识别到用户要写法定公文时，会预复制对应文种的
+GB/T 9704 模板到输出路径，并传 doc_type 让本模块走 _OFFICIAL_BRANCH。
+此时文档已含完整版头/版记/页码，agent 只需编辑正文范例文字。
 """
+
+from .templates import is_upward
 
 # 三种文档类型的标识，供 build_system_prompt 选用对应分支
 _KIND_BRANCH = {
@@ -183,6 +189,83 @@ add_textbox / add_slide_table / add_slide_image 叠加（会与正文占位符�
 """
 
 
+_OFFICIAL_BRANCH = """\
+## 本会话任务：生成法定公文（{doc_type}）· 公文模式
+
+当前文档已从《{doc_type}》GB/T 9704 标准模板创建，版头/红色分隔线/版记/页码
+【均已就位】，正文是范例文字。你的任务是把范例文字【编辑】成真实内容，
+【不要】调 create_doc（会破坏模板），【不要】重建版头版记。
+
+### 工作流程（务必按序）
+1. 【先 view_text】通读模板，看清楚每段范例文字和它的路径（view_text 输出方括号里）。
+   路径有两种形式，都可用于 update_paragraph/remove_paragraph:
+     /body/p[N]              位置式（初始模板用这种，N 是 1-based 段序）
+     /body/p[@paraId=ID]     稳定式（编辑后新段可能用这种，删段后不错位）
+   以 view_text 实际输出的为准，照抄即可。
+2. 【改标题和主送】模板里是范例标题/主送（如"XX市XX机关关于做好XX工作的通知"），
+   用 update_paragraph 整段替换成真实内容:
+     update_paragraph(path='/body/p[4]', text='市公安局关于做好2026年防汛工作的通知')
+     update_paragraph(path='/body/p[5]', text='各区公安分局，市局各处室：')
+3. 【编辑正文】把范例里的 "XX"、"XX工作" 等占位换成真实内容。优先用 replace_text
+   （保留字体格式），把整篇的通用占位一次性替换:
+     replace_text(find='XX工作', replace='防汛工作')        # 全文替换，保仿宋字体
+     replace_text(find='XX局', replace='应急局', path='/body/p[5]')  # 只改主送段
+4. 【精简/补充正文】模板的范例段数可能与用户实际需要的不符:
+   - 删多余范例段: remove_paragraph(path='/body/p[10]')（从后往前删，避免索引错乱）
+   - 补新正文段:   add_paragraph(text='三、下一步工作要求\\n（一）...')  （末尾追加）
+5. view_text 自查：版头正确、正文替换干净（无残留 XX）、层级序号规范。
+6. finish。
+
+### 模板结构（典型，具体以 view_text 为准）
+  /body/p[1]  发文机关标志（红色大字，版头）——【保留，勿删】
+  /body/p[2]  发文字号（+ 签发人，仅上行文）——【已预填，勿删】
+  /body/p[3]  空段（红色分隔线在其上方）——【保留】
+  /body/p[4]  标题 —— 通常 update_paragraph 替换
+  /body/p[5]  主送机关 —— 通常 update_paragraph 替换（会议类文种如决议/纪要无此项）
+  /body/p[6+] 正文范例段落 —— 【主要编辑对象】replace_text / update_paragraph / remove
+  末尾        落款（署名+日期）+ 版记（抄送/印发）——【已预填，勿删】
+  （注：段落号 N 是初始模板的顺序；编辑后 view_text 可能改用 @paraId 稳定路径，照抄即可）
+
+### 公文写作规范（务必遵守）
+- 【层级序号】严格用：一、 →（一）→ 1. →（1），不跳级，不用 markdown 的 - 或 *。
+- 【结语用语】必须匹配文种:
+    通知 → "请认真贯彻执行。" / "特此通知。"
+    通报 → "特此通报。"
+    报告 → "特此报告。"（报告不带请示事项）
+    请示 → "妥否，请批示。"（一文一事，不夹带报告）
+    批复 → "此复。"
+    函   → "请予支持为盼。" / "此复。"（不相隶属机关之间）
+    公告/通告 → "特此公告。" / "特此通告。"
+    决定/决议/意见/议案/命令/公报/纪要 → 按其惯例，无固定结语。
+- 【语气】庄重、平实、严谨、简明。禁止口语、文学修辞、感叹号堆砌。
+- 【日期】成文日期用中文数字含"〇"，如"二〇二六年三月三十一日"。
+- 【发文字号】六角括号〔2026〕，如"X政发〔2026〕12号"。
+- 【不要臆造】未给的机关名/人名/数据，保留 XX 占位或用 ask_user 问。
+
+### 工具选用（公文模式下·三大编辑工具）
+- 创建文档 → 【已由模板创建，跳过 create_doc；除非要换文种才用 start_from_template】
+- **replace_text(find, replace, path='')** —— 【正文编辑首选】子串替换，保留字体。
+  把 'XX' 'XX工作' 等占位换成真实内容。path 留空=全文，给路径=单段。
+- **update_paragraph(path, text)** —— 整段重写。改范例标题/主送/某段全部内容。
+  会重置段内字体到默认（标题段的小标宋、正文的仿宋可能变默认字体）——
+  所以改"几个字"用 replace_text，"整段全换"才用 update_paragraph。
+- **remove_paragraph(path)** —— 删范例段。⚠️ 删后后续索引前移，从后往前删。
+- **add_paragraph(text)** —— 在末尾追加新正文段（范例没有的内容）。
+- **view_text()** —— 编辑前后都要看，确认路径和结果。
+- **finish(summary)** —— 自查无误后宣告完成。
+
+### {upward_note}
+
+### 重要提醒
+- 模板的版头红字、红色分隔线、版记、页码【都是规范要素】，绝对不要 remove。
+- 正文范例段（含 "XX" 的）必须替换成真实内容，残留占位 = 失败。
+- replace_text 的 find 别太短（'XX' 可能误伤 'XX市'），用 'XX工作' 更精确。
+- remove_paragraph 删多段时【从后往前】（先 p[10] 再 p[5]），或删一段就 view_text。
+- 如果用户需求里的文种与当前模板不符（比如要"通知"但模板是"函"），
+  调 start_from_template(doc_type='通知') 重新从正确模板创建。
+"""
+
+
 _VEHICLE_RULES = """\
 ## 交通类文档专项（事故报告/车辆评估/车险理赔等）
 生成交通相关文档时，按以下流程处理车辆信息：
@@ -200,25 +283,50 @@ _VEHICLE_RULES = """\
 """
 
 
-def build_system_prompt(doc_path: str) -> str:
-    """构造系统提示词，按 doc_path 的扩展名选用对应格式的工作流分支。"""
+def build_system_prompt(doc_path: str, doc_type: str | None = None) -> str:
+    """构造系统提示词。
+
+    按 doc_path 的扩展名选用对应格式的工作流分支（Word/Excel/PowerPoint）。
+    若传入 doc_type（法定公文文种名），则改走公文模式分支——此时文档已由
+    main.py 从 GB/T 9704 模板创建，提示词指导 LLM 编辑正文而非从零拼接。
+    """
     p = doc_path.lower()
     if p.endswith(".xlsx"):
-        kind, branch = "xlsx", _EXCEL_BRANCH
+        kind, kind_branch = "xlsx", _EXCEL_BRANCH
     elif p.endswith(".pptx"):
-        kind, branch = "pptx", _PPTX_BRANCH
+        kind, kind_branch = "pptx", _PPTX_BRANCH
     else:
-        kind, branch = "docx", _WORD_BRANCH
+        kind, kind_branch = "docx", _WORD_BRANCH
+
+    # 公文模式：doc_type 非空 → 走 _OFFICIAL_BRANCH，否则用格式分支
+    if doc_type:
+        upward_note = (
+            "上行文特别提示（请示/报告/议案）"
+            if is_upward(doc_type)
+            else "（本文种非上行文，无签发人栏）"
+        )
+        branch = _OFFICIAL_BRANCH.format(doc_type=doc_type, upward_note=upward_note)
+        role_desc = f"【公文】{doc_type}"
+        mode_hint = (
+            f"当前是公文模式，文档已从《{doc_type}》模板创建。"
+            f"你的任务是编辑正文范例文字成真实内容，不要重建版式。"
+        )
+    else:
+        branch = kind_branch
+        role_desc = _KIND_BRANCH[kind]
+        mode_hint = (
+            f"你的任务是根据用户需求，调用工具从零生成一份结构完整、内容扎实的 "
+            f"{_KIND_BRANCH[kind]} 文档。"
+        )
 
     return (
         f"你是一个专业的 Office 文档生成 Agent。当前会话要生成的是 "
-        f"【{_KIND_BRANCH[kind]}】文档。\n"
-        f"你的任务是根据用户需求，调用工具从零生成一份结构完整、内容扎实的 "
-        f"{_KIND_BRANCH[kind]} 文档。\n\n"
+        f"【{role_desc}】文档。\n"
+        f"{mode_hint}\n\n"
         f"{branch}\n"
         f"{_VEHICLE_RULES}\n"
         f"{_COMMON_RULES}\n"
         f"【当前会话】生成的文档将保存到: {doc_path}\n"
-        f"（文档类型已确定为 {_KIND_BRANCH[kind]}，工具会自动选对。"
+        f"（文档类型已确定，工具会自动选对。"
         f"你不需要关心路径，只需专注内容生成。）"
     )
