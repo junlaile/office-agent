@@ -78,6 +78,41 @@ class TestBuildSystemPromptOfficial:
         assert "create_doc" in p
         assert "跳过" in p or "不要" in p
 
+    def test_official_mode_no_create_doc_strict_rule(self):
+        """公文模式【不】输出"create_doc 必须最先单独调用一次"这条强制规则
+        （它与公文分支"跳过 create_doc、先 view_text"直接冲突，曾导致 LLM
+        跳过读模板直接 add_paragraph 追加到模板末尾）。"""
+        p = build_system_prompt("output/x.docx", doc_type="通知")
+        assert "create_doc 必须【最先单独调用一次】" not in p
+
+    def test_normal_mode_keeps_create_doc_strict_rule(self):
+        """普通模式仍保留 create_doc 强制规则（从零生成需要先建空文档）。"""
+        p = build_system_prompt("output/x.docx")
+        assert "create_doc 必须【最先单独调用一次】" in p
+
+    def test_template_text_injected_into_official_prompt(self):
+        """公文模式下，template_text 非空时其内容被注入提示词——
+        让 LLM 第一轮就看到段落路径，不必自调 view_text。"""
+        sample = "[/body/p[4]] 关于做好XX工作的通知\n[/body/p[5]] 各区公安分局："
+        p = build_system_prompt("output/x.docx", doc_type="通知", template_text=sample)
+        assert sample in p
+        # 注入引导语
+        assert "已为你读取的模板正文" in p
+        assert "编辑前【不必】再调 view_text" in p
+
+    def test_template_text_ignored_in_normal_mode(self):
+        """普通模式忽略 template_text（它只对公文模式有意义）。"""
+        sample = "[/body/p[4]] 范例"
+        p = build_system_prompt("output/x.docx", template_text=sample)
+        assert sample not in p
+
+    def test_empty_template_text_not_injected(self):
+        """template_text 为空时公文分支不追加注入段（保持原提示词形态）。"""
+        p_empty = build_system_prompt("output/x.docx", doc_type="通知", template_text="")
+        p_blank = build_system_prompt("output/x.docx", doc_type="通知", template_text="   ")
+        assert "已为你读取的模板正文" not in p_empty
+        assert "已为你读取的模板正文" not in p_blank
+
     def test_upward_note_present(self):
         """上行文含'上行文特别提示'。"""
         p = build_system_prompt("output/x.docx", doc_type="请示")

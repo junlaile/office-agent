@@ -94,6 +94,29 @@ class TestDocToolsForwarding:
         create_calls = [c for c in fake_runner.calls if c[0] == "create"]
         assert create_calls
 
+    def test_add_image_valid_source_forwards(self, fake_runner, doc_session):
+        """有效图片源（data URI）→ 转发到 officecli（调 runner）。"""
+        result = TOOL_BY_NAME["add_image"].invoke(
+            {"url_or_path": "data:image/png;base64,iVBORw0KGgo=", "width": "8cm"}
+        )
+        # 应有 add paragraph（载段）+ add picture 两条调用
+        add_calls = [c for c in fake_runner.calls if c[0] == "add"]
+        assert any("picture" in str(c) for c in add_calls)
+        # data URI 通过预校验，返回值不是跳过提示
+        assert "跳过" not in result
+
+    def test_add_image_bad_source_skips_without_touching_doc(self, fake_runner, doc_session):
+        """坏图片源（本地不存在）→ 预校验拦住，不碰文档（不调 runner）。"""
+        result = TOOL_BY_NAME["add_image"].invoke(
+            {"url_or_path": "/definitely/nonexistent/image.png"}
+        )
+        # 返回跳过提示
+        assert "跳过" in result
+        assert "不存在" in result
+        assert "不要重试" in result
+        # 关键：完全没碰文档——runner 零调用（连载段都没建）
+        assert fake_runner.calls == []
+
 
 class TestExcelToolsForwarding:
     def test_set_cell_forwards(self, fake_runner, xlsx_session):

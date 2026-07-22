@@ -26,7 +26,6 @@ _COMMON_RULES = """\
 - 【并行调用】你可以在【一次回复里同时调用多个工具】。例如一次回复里同时发起
   多个 add_paragraph / set_cells / add_slide 等，它们会按顺序执行。
   把同一区块的内容尽量放在一次回复里，能大幅减少往返轮次。
-- create_doc 必须【最先单独调用一次】，确认成功后再批量加内容。
 - 不要一次只加一个元素再停下来等——除非需要先看 create_doc 的结果。
 
 ### 内容要求
@@ -283,12 +282,45 @@ _VEHICLE_RULES = """\
 """
 
 
-def build_system_prompt(doc_path: str, doc_type: str | None = None) -> str:
+# 普通模式下才生效的 create_doc 规则。
+# 【模式感知】公文模式不输出此规则——公文分支已明确"跳过 create_doc，
+# 先 view_text"。混在一起会让 LLM 收到自相矛盾的指令（一边说"最先单独调
+# create_doc"，一边说"不要调 create_doc"），容易跳过读模板直接 add_paragraph
+# 追加到模板末尾，破坏正文编辑流程。
+_CREATE_DOC_RULE = (
+    "- create_doc 必须【最先单独调用一次】，确认成功后再批量加内容。"
+)
+
+
+# 公文模式下，把已读取的模板正文（带路径标注）注入提示词。
+# 这样 LLM 第一轮就能"看到"每段范例文字及其路径，直接照路径编辑，
+# 不依赖它"听话"去自己调 view_text。读取失败时留空，回退到软指令。
+_TEMPLATE_CONTEXT = """\
+
+### 已为你读取的模板正文（路径见方括号，照抄即可用）
+{text}
+
+以上是当前文档的全部段落。直接用上面方括号里的路径（如 /body/p[4]）编辑：
+- 编辑前【不必】再调 view_text（已读好）；
+- 编辑后仍可调 view_text 自查结果（删段会导致后续索引前移，自查更稳）。
+"""
+
+
+def build_system_prompt(
+    doc_path: str,
+    doc_type: str | None = None,
+    *,
+    template_text: str = "",
+) -> str:
     """构造系统提示词。
 
     按 doc_path 的扩展名选用对应格式的工作流分支（Word/Excel/PowerPoint）。
     若传入 doc_type（法定公文文种名），则改走公文模式分支——此时文档已由
     main.py 从 GB/T 9704 模板创建，提示词指导 LLM 编辑正文而非从零拼接。
+
+    template_text（仅公文模式有意义）：已读取的模板正文（view_text 的输出，
+    带路径标注）。非空时注入提示词，让 LLM 无需再自调 view_text 即可看到
+    段落结构、照路径编辑——把"靠 LLM 听话读模板"变成"上下文里已有"。
     """
     p = doc_path.lower()
     if p.endswith(".xlsx"):
@@ -306,11 +338,16 @@ def build_system_prompt(doc_path: str, doc_type: str | None = None) -> str:
             else "（本文种非上行文，无签发人栏）"
         )
         branch = _OFFICIAL_BRANCH.format(doc_type=doc_type, upward_note=upward_note)
+        # 注入已读取的模板正文（若 main.py 预读成功）
+        if template_text.strip():
+            branch += _TEMPLATE_CONTEXT.format(text=template_text.strip())
         role_desc = f"【公文】{doc_type}"
         mode_hint = (
             f"当前是公文模式，文档已从《{doc_type}》模板创建。"
             f"你的任务是编辑正文范例文字成真实内容，不要重建版式。"
         )
+        # 公文模式不输出 create_doc 规则（与"跳过 create_doc"冲突）
+        common_rules = _COMMON_RULES
     else:
         branch = kind_branch
         role_desc = _KIND_BRANCH[kind]
@@ -318,6 +355,8 @@ def build_system_prompt(doc_path: str, doc_type: str | None = None) -> str:
             f"你的任务是根据用户需求，调用工具从零生成一份结构完整、内容扎实的 "
             f"{_KIND_BRANCH[kind]} 文档。"
         )
+        # 普通模式：补回 create_doc 规则（从 _COMMON_RULES 拆出，仅此模式需要）
+        common_rules = _COMMON_RULES + "\n" + _CREATE_DOC_RULE
 
     return (
         f"你是一个专业的 Office 文档生成 Agent。当前会话要生成的是 "
@@ -325,7 +364,7 @@ def build_system_prompt(doc_path: str, doc_type: str | None = None) -> str:
         f"{mode_hint}\n\n"
         f"{branch}\n"
         f"{_VEHICLE_RULES}\n"
-        f"{_COMMON_RULES}\n"
+        f"{common_rules}\n"
         f"【当前会话】生成的文档将保存到: {doc_path}\n"
         f"（文档类型已确定，工具会自动选对。"
         f"你不需要关心路径，只需专注内容生成。）"

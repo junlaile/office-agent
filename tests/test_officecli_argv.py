@@ -78,6 +78,24 @@ class TestDocToolArgv:
         call = find_call(fake_runner, "add")
         assert has_prop(call, f"size={expected_size}")
 
+    @pytest.mark.parametrize("level,expected_lvl", [(1, 0), (2, 1), (3, 2), (4, 3)])
+    def test_add_heading_sets_outline_level(self, fake_runner, tmp_path, level, expected_lvl):
+        """add_heading 必须设 outlineLvl（level-1），否则 Word 目录收不到标题
+        （目录会停在占位文本 'Update field to see table of contents'）。"""
+        tool = DocTool(str(tmp_path / "t.docx"))
+        tool.add_heading("章", level=level)
+        call = find_call(fake_runner, "add")
+        assert has_prop(call, f"outlineLvl={expected_lvl}")
+
+    def test_add_title_has_no_outline_level(self, fake_runner, tmp_path):
+        """add_title 不设 outlineLvl——主标题是封面式标题，不应进目录（否则重复）。"""
+        tool = DocTool(str(tmp_path / "t.docx"))
+        tool.add_title("文档主标题")
+        call = find_call(fake_runner, "add")
+        assert not any(
+            isinstance(p, str) and p.startswith("outlineLvl=") for p in call
+        )
+
     def test_add_paragraph_basic(self, fake_runner, tmp_path):
         tool = DocTool(str(tmp_path / "t.docx"))
         tool.add_paragraph("正文内容")

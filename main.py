@@ -70,16 +70,20 @@ def run() -> int:
     doc_path = _derive_doc_path(requirement, doc_type=doc_type)
     print(f"{_DIM}输出文件: {doc_path}{_RESET}")
 
-    # 公文模式：从模板预创建文档并预填版头（失败则回退普通模式）
+    # 公文模式：从模板预创建文档并预填版头（失败则回退普通模式）。
+    # _prepare_official_doc 同时预读模板正文（template_text），注入提示词，
+    # 让 LLM 第一轮就看到段落结构，避免跳过读模板直接瞎改。
+    template_text = ""
     if doc_type:
-        doc_type = _prepare_official_doc(doc_type, doc_path) or None
+        doc_type, template_text = _prepare_official_doc(doc_type, doc_path)
+        doc_type = doc_type or None
     print()
 
     # 延迟 import（确保 officecli 已就绪）
     from office_agent.graph import build_graph
 
     set_session_doc(doc_path)
-    graph = build_graph(doc_path, doc_type=doc_type)
+    graph = build_graph(doc_path, doc_type=doc_type, template_text=template_text)
     thread_id = str(uuid.uuid4())
     config = {
         "configurable": {"thread_id": thread_id},

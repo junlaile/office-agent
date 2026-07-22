@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 from langchain_core.tools import tool
 from langgraph.types import interrupt
@@ -26,6 +29,65 @@ from office_agent.tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# 图片来源预校验超时（秒）。仅用于 HEAD 探测 URL 是否可达，不影响 officecli 实际下载。
+_IMAGE_HEAD_TIMEOUT = 8
+
+
+def _validate_image_source(src: str) -> str | None:
+    """校验图片来源是否可用，在碰文档前拦掉坏源。
+
+    返回 None 表示有效（可继续插入）；返回 str 表示失败原因（供工具层反馈给 LLM）。
+
+    设计原则【宁可放行，不可误拦】：
+        - 本地路径：os.path.exists 硬检查，可靠无歧义 → 坚决拦。
+        - data URI：内联数据，总是可用 → 放行。
+        - HTTP/HTTPS：发 HEAD 探测。明确 404/410、连接失败/DNS 失败/超时 → 拦；
+          405（方法不允许）或其它不确定响应 → 放行交给 officecli 实际 GET
+          （有些服务器不支持 HEAD 但 GET 能取，避免误伤）。
+
+    这样主流坏源（本地不存在、404、域名打不开）在碰文档前被拦掉、零副作用；
+    边缘情况（HEAD 不准）由 officecli 兜底，失败时 doc_tool 的事后清理兜底会删载段。
+    """
+    if not src or not src.strip():
+        return "图片来源为空"
+    s = src.strip()
+
+    # data URI：内联，总是可用
+    if s.startswith("data:"):
+        return None
+
+    # HTTP/HTTPS：HEAD 探测可达性
+    if s.startswith(("http://", "https://")):
+        try:
+            req = Request(s, method="HEAD")
+            with urlopen(req, timeout=_IMAGE_HEAD_TIMEOUT) as resp:
+                code = getattr(resp, "status", None) or resp.getcode()
+                # 明确的"不存在"类状态码 → 拦
+                if code in (404, 410):
+                    return f"图片不存在（HTTP {code}）"
+                # 其它（2xx/3xx/405/...）→ 放行
+                return None
+        except URLError as e:
+            # HTTPError（4xx/5xx 有响应）也是 URLError 子类
+            code = getattr(e, "code", None)
+            if code in (404, 410):
+                return f"图片不存在（HTTP {code}）"
+            if code in (405,) or "Method Not Allowed" in str(e):
+                # HEAD 不被支持 → 放行，让 officecli 实际 GET
+                return None
+            # 连接失败 / DNS 失败 / 超时 / 拒绝 → 拦
+            return f"图片不可访问（{e.reason}）"
+        except Exception as e:  # noqa: BLE001
+            # 未知异常 → 放行（不误拦），交给 officecli 兜底
+            logger.debug("图片源 HEAD 探测异常（放行交给 officecli）: %s", e)
+            return None
+
+    # 本地路径：硬检查存在性
+    if not os.path.exists(s):
+        return f"文件不存在: {s}"
+    return None
 
 
 class AskField(BaseModel):
@@ -227,6 +289,14 @@ def add_image(url_or_path: str, width: str = "8cm", caption: str = "") -> str:
     - Word: 在文档末尾插入。
     - PowerPoint: 默认加到【最新一张幻灯片】。要加到特定幻灯片请先 add_slide 再调本工具。
     """
+    # 预校验图片来源：坏源（404/文件不存在/域名打不开）在碰文档前跳过，
+    # 不嵌入、不留空段、不浪费 officecli 调用。
+    reason = _validate_image_source(url_or_path)
+    if reason:
+        return (
+            f"⚠️ 跳过插入图片（{reason}）。"
+            f"不要重试这张图，继续生成文档其他内容。"
+        )
     kind = session_doc_kind()
     try:
         t = _tool()

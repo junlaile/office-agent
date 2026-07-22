@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,12 @@ class DocTool:
         )
 
     def add_heading(self, text: str, level: int = 1) -> str:
-        """加章节标题。level 1-9，字号递减、加粗。"""
+        """加章节标题。level 1-9，字号递减、加粗。
+
+        同时设置大纲级别（outlineLvl = level-1），让 Word 目录（TOC）能收录
+        这些标题——TOC 的 ``\\o "1-3"`` 只收录带大纲级别 0-2 的段落，不设
+        outlineLvl 的标题进不了目录（目录会显示空占位"Update field..."）。
+        """
         level = max(1, min(9, int(level)))
         size = _HEADING_SIZE_PT[level]
         return self.runner.run(
@@ -103,6 +109,9 @@ class DocTool:
                 "spaceBefore=12pt",
                 "--prop",
                 "spaceAfter=6pt",
+                # 大纲级别（0-based）：让 TOC 能收录本标题
+                "--prop",
+                f"outlineLvl={level - 1}",
             ]
         )
 
@@ -266,6 +275,9 @@ class DocTool:
             width: 显示宽度（如 '8cm'/'400px'/'3in'）。高度按比例。
             alt: 图片替代文本（无障碍 + 图片加载失败时显示）。
             caption: 可选图注。非空时在图片下方加一段居中的图注文字。
+
+        失败兜底: 若图片插入失败（即使经上层预校验放行，officecli 实际下载/读取
+        仍可能失败），会删除刚建的载段再上抛异常，避免在文档里残留空段落。
         """
         # 1) 先加一个空段落作为图片的 parent
         self.runner.run(
@@ -281,14 +293,22 @@ class DocTool:
         p_index = self._last_paragraph_index()
         if p_index <= 0:
             p_index = 1
-        # 3) 把图片插入该段落
+        # 3) 把图片插入该段落。失败时删掉载段，避免残留空段落。
         props = [f"src={src}", f"width={width}"]
         if alt:
             props.append(f"alt={alt}")
         args = ["add", self.doc_path, f"/body/p[{p_index}]", "--type", "picture"]
         for p in props:
             args += ["--prop", p]
-        self.runner.run(args)
+        try:
+            self.runner.run(args)
+        except OfficeCLIError:
+            # 图片插入失败 → 删除刚建的载段，不留悬空空段
+            try:
+                self.remove(f"/body/p[{p_index}]")
+            except OfficeCLIError:
+                pass  # 删段也失败就尽力了，至少不掩盖原图错误
+            raise
 
         # 4) 可选图注
         if caption:
@@ -413,6 +433,54 @@ class DocTool:
         return self.runner.run(["validate", self.doc_path])
 
     # ---- 目录 ----
+    def _ensure_updatefields(self) -> None:
+        """确保 settings.xml 的 ``<w:updateFields w:val="true"/>` 正确写入。
+
+        officecli 的 ``set / --prop updateFields=true`` 产出的是
+        ``<w:updateFields />``（无 ``w:val`` 属性），按 OOXML 规范缺省 ``w:val``
+        等同 false，Word 打开时不会提示刷新域 → 目录停留在占位文本
+        "Update field to see table of contents"。
+
+        本方法后处理 settings.xml：把无 ``w:val`` 的标签补成 ``w:val="true"``；
+        标签不存在则在 ``<w:settings ...>`` 开头插入。幂等（已正确则不动）。
+        失败（zip 读写/正则异常）只记日志不抛——目录仍可用，只是需手动 F9 刷新。
+        """
+        try:
+            with zipfile.ZipFile(self.doc_path, "r") as zin:
+                if "word/settings.xml" not in zin.namelist():
+                    return
+                xml = zin.read("word/settings.xml").decode("utf-8")
+                # 已有正确的 val="true" 标签 → 无需改
+                if re.search(r'<w:updateFields\s+w:val="true"\s*/?>', xml):
+                    return
+                # 有 updateFields 但无 val（或缺 val="true"）→ 补 val="true"
+                new_xml, n = re.subn(
+                    r'<w:updateFields\s*/>', '<w:updateFields w:val="true"/>', xml
+                )
+                if n == 0:
+                    # 整个标签不存在 → 在 <w:settings ...> 开标签后插入
+                    new_xml, n = re.subn(
+                        r'(<w:settings\b[^>]*>)',
+                        r'\1<w:updateFields w:val="true"/>',
+                        xml,
+                        count=1,
+                    )
+                    if n == 0:
+                        return  # 连 <w:settings> 都没有，放弃
+                # 重写整个 zip（zip 不支持原地改单文件）
+                tmp = self.doc_path + ".tmp"
+                with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+                    for item in zin.infolist():
+                        # 跳过原 settings.xml，下面用修改后的覆盖（避免重名孤儿条目）
+                        if item.filename == "word/settings.xml":
+                            continue
+                        zout.writestr(item, zin.read(item.filename))
+                    zout.writestr("word/settings.xml", new_xml.encode("utf-8"))
+            # 原子替换
+            Path(tmp).replace(self.doc_path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("updateFields 后处理失败（不影响主流程，目录需手动刷新）: %s", e)
+
     def add_toc(
         self,
         *,
@@ -429,8 +497,9 @@ class DocTool:
             hyperlinks: 条目是否可点击跳转。
             page_numbers: 是否显示页码。
 
-        注意: TOC 是 Word 域，真实条目需 Word 打开时刷新（或预先渲染）。
-        会同时设 updateFields=true 让 Word 下次打开时自动重建条目。
+        注意: TOC 是 Word 域，真实条目在 Word 打开时刷新（会弹"是否更新域"提示，
+        点是即自动填充）。本方法已确保 ``updateFields=true`` 正确写入 settings.xml，
+        触发该提示。前提：标题用 add_heading 添加（它设了 outlineLvl，TOC 才收得到）。
         """
         args = [
             "add",
@@ -448,11 +517,8 @@ class DocTool:
         if page_numbers:
             args += ["--prop", "pageNumbers=true"]
         result = self.runner.run(args)
-        # 让 Word 打开时自动刷新 TOC 条目
-        try:
-            self.runner.run(["set", self.doc_path, "/", "--prop", "updateFields=true"])
-        except OfficeCLIError:
-            pass
+        # 让 Word 打开时自动刷新 TOC 条目（修正 officecli 缺 w:val="true" 的问题）
+        self._ensure_updatefields()
         return result
 
     # ---- 页眉 / 页脚 ----

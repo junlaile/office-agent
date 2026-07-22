@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
 from office_agent.config import settings
+from office_agent.doc_tool import DocTool
 from office_agent.officecli import OfficeCLIError, merge_template, resolve_bin
 from office_agent.templates import (
     default_merge_data,
@@ -186,20 +187,27 @@ def _derive_doc_path(requirement: str, doc_type: str | None = None) -> str:
     return str((settings.output_dir / f"{safe}_{stamp}.{kind}").resolve())
 
 
-def _prepare_official_doc(doc_type: str, doc_path: str) -> str | None:
-    """从公文模板预创建文档并预填版头槽位，返回文种名（失败返回 None）。
+def _prepare_official_doc(doc_type: str, doc_path: str) -> tuple[str | None, str]:
+    """从公文模板预创建文档并预填版头槽位，返回 (文种名, 模板正文)。
+
+    失败时返回 (None, "")，由调用方回退到普通生成流程。
 
     调用前提: doc_type 已由 detect_doc_type 识别为合法文种。
     做的事:
         1. 定位模板文件 template/word/NN-{doc_type}.docx。
         2. merge 模板到 doc_path（一步完成复制 + 版头槽位预填）。
-        3. 打印预创建结果。
-    任何步骤失败都返回 None，由调用方回退到普通生成流程。
+        3. 立即读一次 view_text，拿到带路径标注的模板正文，回传给
+           build_system_prompt 注入提示词——让 LLM 第一轮就"看到"段落结构，
+           不必依赖它自己调 view_text（核心：解决"没读模板就瞎改"问题）。
+        4. 打印预创建结果。
+
+    template_text 读取失败（officecli 异常等）不阻断主流程：退化为空串，
+    提示词回退到软指令"先 view_text"，LLM 仍可自行读取兜底。
     """
     tmpl = template_path(doc_type)
     if not tmpl.exists():
         logger.warning("公文模板缺失，回退普通模式: %s", tmpl)
-        return None
+        return None, ""
 
     # 预填数据：用户没提供的版头槽位用默认占位值
     merge_data = default_merge_data(doc_type)
@@ -207,11 +215,19 @@ def _prepare_official_doc(doc_type: str, doc_path: str) -> str | None:
         merge_template(str(tmpl), doc_path, merge_data)
     except OfficeCLIError as e:
         logger.warning("公文模板预填失败，回退普通模式: %s", e)
-        return None
+        return None, ""
+
+    # 预读模板正文（带路径标注），注入提示词，避免 LLM 跳过读模板
+    template_text = ""
+    try:
+        template_text = DocTool(doc_path).view_text()
+    except OfficeCLIError as e:
+        # 预读失败不致命：退化为空，LLM 自调 view_text 兜底
+        logger.warning("模板正文预读失败，回退到 LLM 自行 view_text: %s", e)
 
     print(f"{_GREEN}✓ 已从 GB/T 9704 模板创建{_RESET}")
     print(f"{_DIM}  模板: {tmpl.name} | 版头槽位已预填占位值，正文待 agent 编辑{_RESET}")
-    return doc_type
+    return doc_type, template_text
 
 
 def _indent(text: str, pad: str = "    ") -> str:

@@ -15,6 +15,7 @@ from office_agent.tools import (
     _wrong_kind_msg,
     session_doc_kind,
 )
+from office_agent.tools.common import _validate_image_source
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,13 @@ def add_slide_image(url_or_path: str, x: str = "2cm", y: str = "2cm", width: str
     if session_doc_kind() != "pptx":
         return _wrong_kind_msg(
             "add_slide_image", "pptx", "docx 用 add_image；xlsx 单元格内图片暂不支持"
+        )
+    # 预校验图片来源：坏源在碰文档前跳过，不嵌入、不浪费 officecli 调用。
+    reason = _validate_image_source(url_or_path)
+    if reason:
+        return (
+            f"⚠️ 跳过插入图片（{reason}）。"
+            f"不要重试这张图，继续生成幻灯片其他内容。"
         )
     try:
         pptx: PptxTool = _tool()  # type: ignore[assignment]
