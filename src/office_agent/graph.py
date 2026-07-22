@@ -3,7 +3,7 @@
 结构:
     START → agent → tools → (路由) → agent ↻ ... → END
 
-    - agent 节点: LLM.bind_tools(ALL_TOOLS)，决定调哪个工具
+    - agent 节点: LLM.bind_tools(按格式工具集)，决定调哪个工具
     - tools 节点: 手写（不用 ToolNode），因为要处理
         · ask_user 的 interrupt 挂起
         · finish 的短路完成
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
@@ -30,40 +30,50 @@ from .config import settings
 from .llm import get_llm
 from .prompts import build_system_prompt
 from .state import AgentState
-from .tools import ALL_TOOLS, TOOL_BY_NAME
+from .format_detect import OfficeFormat
+from .tools import TOOL_BY_NAME, tools_for_format
+from .user_input import PREFIX_SUPPLEMENT, get_bridge
 
 # 软收尾阈值：当剩余步数 < 限额的此比例时，触发"尽快 finish"提醒。
 # 0.7 意味着用掉 70% 预算后开始催促收尾，留 30% 余量完成 view_text+finish。
 SOFT_FINISH_RATIO = 0.7
 
 
-def _agent_node_factory(doc_path: str):
-    """构造 agent 节点。doc_path 用于系统提示词。"""
+def _agent_node_factory(doc_path: str, fmt: OfficeFormat = "docx"):
+    """构造 agent 节点。doc_path / fmt 用于系统提示词与工具绑定。"""
 
-    llm_with_tools = get_llm().bind_tools(ALL_TOOLS)
-    system_msg = SystemMessage(content=build_system_prompt(doc_path))
+    llm_with_tools = get_llm().bind_tools(tools_for_format(fmt))
+    system_msg = SystemMessage(content=build_system_prompt(doc_path, fmt))
 
     def agent_node(state: AgentState) -> dict[str, Any]:
         messages = state.get("messages", [])
+        bridge = get_bridge()
+
+        # 忙时软补充：注入为 HumanMessage，写入 checkpoint 再送给 LLM
+        injected: list[HumanMessage] = []
+        if bridge is not None:
+            for text in bridge.drain_soft():
+                injected.append(HumanMessage(content=f"{PREFIX_SUPPLEMENT}{text}"))
+
         limit = settings.recursion_limit
         # 用 messages 数估算已用步数：每轮 agent+tools 约加 2 条消息。
         # 粗略但足够触发软收尾。
-        used = len(messages)
+        used = len(messages) + len(injected)
         soft_threshold = int(limit * SOFT_FINISH_RATIO)
 
-        prompt_messages: list = [system_msg, *messages]
+        prompt_messages: list = [system_msg, *messages, *injected]
         # 软收尾提醒：接近预算时催促 finish
         if used >= soft_threshold:
             remaining = max(0, limit - used)
             reminder = SystemMessage(content=(
                 f"【系统提醒】已用约 {used // 2} 轮工具调用，剩余预算约 {remaining // 2} 轮。"
-                f"请【立即停止添加新内容】，执行 view_text 自查（若还没查），"
+                f"请【立即停止添加新内容】，执行 view_outline 自查（若还没查），"
                 f"然后调用 finish 宣告完成。不要再调用 add_* 工具。"
             ))
             prompt_messages.append(reminder)
 
         ai_msg = llm_with_tools.invoke(prompt_messages)
-        return {"messages": [ai_msg]}
+        return {"messages": [*injected, ai_msg]}
 
     return agent_node
 
@@ -170,14 +180,15 @@ def _route_after_agent(state: AgentState) -> str:
     return END
 
 
-def build_graph(doc_path: str):
+def build_graph(doc_path: str, fmt: OfficeFormat = "docx"):
     """构建并编译 ReAct agent 图。
 
     doc_path: 本会话的文档输出路径（注入到系统提示词和工具会话）。
+    fmt: docx / xlsx / pptx，决定绑定哪套工具与提示词。
     """
     builder = StateGraph(AgentState)
 
-    builder.add_node("agent", _agent_node_factory(doc_path))
+    builder.add_node("agent", _agent_node_factory(doc_path, fmt))
     builder.add_node("tools", _tools_node)
 
     builder.add_edge(START, "agent")
