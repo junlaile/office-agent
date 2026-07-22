@@ -46,9 +46,15 @@ _CITIES = ["海淀区", "朝阳区", "浦东新区", "天河区", "鼓楼区", "
 _ACCIDENT_TYPES = ["追尾", "侧面碰撞", "剐蹭", "单车事故", "行人碰撞", "车辆失控"]
 _LIABILITY = ["全责", "主责", "同责", "次责", "无责"]
 _VIOLATION_TYPES = [
-    ("超速行驶", 3, 200), ("闯红灯", 6, 200), ("违章停车", 0, 100),
-    ("不按规定车道行驶", 2, 100), ("违规变道", 3, 200), ("未系安全带", 1, 50),
-    ("打电话驾驶", 2, 200), ("逆行", 3, 200), ("违反禁令标志", 3, 200),
+    ("超速行驶", 3, 200),
+    ("闯红灯", 6, 200),
+    ("违章停车", 0, 100),
+    ("不按规定车道行驶", 2, 100),
+    ("违规变道", 3, 200),
+    ("未系安全带", 1, 50),
+    ("打电话驾驶", 2, 200),
+    ("逆行", 3, 200),
+    ("违反禁令标志", 3, 200),
 ]
 
 
@@ -94,9 +100,10 @@ def _gen_vehicle(plate: str, rng: random.Random) -> dict[str, Any]:
     # 注册日期：1-12 年前
     reg_days_ago = rng.randint(365, 365 * 12)
     reg_date = (date.today() - timedelta(days=reg_days_ago)).isoformat()
-    vin = "L" + "".join(str(rng.randint(0, 9)) if rng.random() > 0.3
-                         else rng.choice("ABCDEFGHJKLMNPRSTUVWXYZ")
-                         for _ in range(16))
+    vin = "L" + "".join(
+        str(rng.randint(0, 9)) if rng.random() > 0.3 else rng.choice("ABCDEFGHJKLMNPRSTUVWXYZ")
+        for _ in range(16)
+    )
     engine_no = "".join(str(rng.randint(0, 9)) for _ in range(8))
 
     surname = rng.choice(_SURNAMES)
@@ -123,7 +130,7 @@ def _gen_vehicle(plate: str, rng: random.Random) -> dict[str, Any]:
             "name": owner,
             "id_card": _mask_id_card(_gen_id_card(rng)),
             "phone": _mask_phone(_gen_phone(rng)),
-            "address": f"{province}{city}{rng.randint(1,999)}号",
+            "address": f"{province}{city}{rng.randint(1, 999)}号",
         },
     }
 
@@ -132,16 +139,18 @@ def _gen_accidents(rng: random.Random, n: int) -> list[dict[str, Any]]:
     accs = []
     for _ in range(n):
         days_ago = rng.randint(7, 365 * 3)
-        accs.append({
-            "date": (date.today() - timedelta(days=days_ago)).isoformat(),
-            "location": f"{rng.choice(_PROVINCES)}{rng.choice(_CITIES)}"
-                        f"{rng.choice(['路口', '快速路', '高速', '辅路'])}",
-            "type": rng.choice(_ACCIDENT_TYPES),
-            "liability": rng.choice(_LIABILITY),
-            "severity": rng.choice(["轻微", "轻微", "一般", "较大"]),
-            "settled": rng.choice([True, True, False]),
-        })
-    accs.sort(key=lambda x: x["date"], reverse=True)
+        accs.append(
+            {
+                "date": (date.today() - timedelta(days=days_ago)).isoformat(),
+                "location": f"{rng.choice(_PROVINCES)}{rng.choice(_CITIES)}"
+                f"{rng.choice(['路口', '快速路', '高速', '辅路'])}",
+                "type": rng.choice(_ACCIDENT_TYPES),
+                "liability": rng.choice(_LIABILITY),
+                "severity": rng.choice(["轻微", "轻微", "一般", "较大"]),
+                "settled": rng.choice([True, True, False]),
+            }
+        )
+    accs.sort(key=lambda x: x["date"], reverse=True)  # type: ignore[arg-type,return-value]
     return accs
 
 
@@ -150,15 +159,17 @@ def _gen_violations(rng: random.Random, n: int) -> list[dict[str, Any]]:
     for _ in range(n):
         vtype, points, fine = rng.choice(_VIOLATION_TYPES)
         days_ago = rng.randint(7, 365 * 2)
-        vios.append({
-            "date": (date.today() - timedelta(days=days_ago)).isoformat(),
-            "type": vtype,
-            "points": points,
-            "fine": fine,
-            "location": f"{rng.choice(_CITIES)}{rng.choice(['路段', '路口', '隧道'])}",
-            "status": rng.choice(["已处理", "已处理", "未处理"]),
-        })
-    vios.sort(key=lambda x: x["date"], reverse=True)
+        vios.append(
+            {
+                "date": (date.today() - timedelta(days=days_ago)).isoformat(),
+                "type": vtype,
+                "points": points,
+                "fine": fine,
+                "location": f"{rng.choice(_CITIES)}{rng.choice(['路段', '路口', '隧道'])}",
+                "status": rng.choice(["已处理", "已处理", "未处理"]),
+            }
+        )
+    vios.sort(key=lambda x: x["date"], reverse=True)  # type: ignore[arg-type,return-value]
     return vios
 
 
@@ -166,6 +177,7 @@ def _placeholder_image_url(plate: str) -> str:
     """占位车辆图片 URL（后期可换成真实车辆图）。"""
     # placehold.co 支持 text 参数；URL 编码车牌里的中文
     from urllib.parse import quote
+
     return f"https://placehold.co/400x300/EEE/333?text={quote(plate)}"
 
 
@@ -192,15 +204,17 @@ def mock_query(plate: str) -> dict[str, Any]:
         n = rng.randint(2, 3)
         candidates = []
         for i in range(n):
-            v = _gen_vehicle(f"{plate}-{i+1}" if i > 0 else plate, rng)
-            candidates.append({
-                "id": f"{plate}#{i+1}",
-                "plate_number": v["plate_number"],
-                "brand": v["brand"],
-                "model": v["model"],
-                "color": v["color"],
-                "owner": v["owner"]["name"],
-            })
+            v = _gen_vehicle(f"{plate}-{i + 1}" if i > 0 else plate, rng)
+            candidates.append(
+                {
+                    "id": f"{plate}#{i + 1}",
+                    "plate_number": v["plate_number"],
+                    "brand": v["brand"],
+                    "model": v["model"],
+                    "color": v["color"],
+                    "owner": v["owner"]["name"],
+                }
+            )
         return {
             "status": "multiple",
             "message": f"车牌 {plate} 匹配到 {n} 辆车，请确认是哪一辆",

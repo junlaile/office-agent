@@ -8,10 +8,9 @@ ReAct agent 的核心是 messages 列表（LLM 与工具的消息往返）。
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 from langgraph.graph.message import add_messages
-from typing_extensions import Annotated
 
 
 class AgentState(TypedDict, total=False):

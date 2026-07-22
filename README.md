@@ -1,63 +1,95 @@
 # Office Agent
 
-基于 **LangGraph ReAct agent + DeepSeek tool_calls + OfficeCLI** 的交互式 Office 生成 Agent（Word / Excel / PowerPoint）。
+基于 **LangGraph ReAct agent + DeepSeek tool_calls + OfficeCLI** 的交互式 Office 文档生成 Agent，支持 **Word / Excel / PowerPoint** 三种格式。
 
-参考 [DeepSeek tool_calls 文档](https://api-docs.deepseek.com/zh-cn/guides/tool_calls)，用 LangGraph 原生写法（`bind_tools` + agent loop）：按需求自动识别格式并绑定对应工具集，LLM 自主调用 officecli，直到宣告完成。缺关键信息时会暂停向用户确认。
+参考 [DeepSeek tool_calls 文档](https://api-docs.deepseek.com/zh-cn/guides/tool_calls)，用 LangGraph 原生写法（`bind_tools` + agent loop）：LLM 自主决定调用哪个 officecli 工具、什么参数，agent 循环自动执行工具并把结果回传，直到 LLM 宣告完成。缺关键信息时会暂停向用户确认。
 
 ## 架构
 
 ```
-用户需求 → 自动识别格式(docx/xlsx/pptx)
+用户需求
+   ↓
+[文档类型推断]（关键词 → .docx/.xlsx/.pptx，拿不准问用户）
    ↓
 [agent 节点] ←──────┐
-  DeepSeek + bind_tools(该格式工具集)
+  DeepSeek + bind_tools(45 个工具)
+  系统提示词按文档类型走对应分支（Word/Excel/PPTX）
   自主决定调哪个工具
    ↓
 [tools 节点] ──→ 执行(officecli subprocess / interrupt / finish)
+  _tool() 工厂按扩展名路由到 DocTool/ExcelTool/PptxTool
   ToolMessage 回传
    ↓ (路由)
   还有 tool_calls → 回 agent
   finish / 无 tool_calls → END
 ```
 
-- **格式识别**：报表/台账等 → Excel；PPT/幻灯/演示文稿 → PowerPoint；默认 Word（仅「表格」不判为 Excel）
-- **LangGraph** 编排 ReAct 循环 + HITL（`interrupt` / `Command(resume=...)`）
-- **OfficeCLI** 负责 `.docx` / `.xlsx` / `.pptx` 读写
+- **LangGraph** 编排 ReAct 循环 + 原生 human-in-the-loop（`interrupt` / `Command(resume=...)`）
+- **DeepSeek** 通过 OpenAI 兼容 `tools` 接口做工具调用（`bind_tools`，不强制 `tool_choice`）
+- **OfficeCLI**（iOfficeAI）负责 docx/xlsx/pptx 实际读写，每个操作暴露为一个 `@tool`
 
-## 工具集
+## 工具集（49 个）
 
-按会话格式只暴露对应工具（共用 `ask_user` / `finish` / `query_vehicle` / `validate_doc`）。
+LLM 可自主调用以下工具（无需传文件路径，由会话注入）。文档类型决定哪些工具可用：
 
-### Word（.docx）
-
-| 工具 | 作用 |
-|---|---|
-| `create_doc` | 创建空白 docx（默认 zh-CN） |
-| `add_title` / `add_heading` / `add_paragraph` / `add_list_item` | 标题与正文 |
-| `add_table` / `add_image` | 表格 / 图片 |
-| `add_header` / `add_footer` / `add_page_break` | 页眉页脚 / 分页 |
-| `replace_text` / `batch_add` | 查找替换 / 批量写入 |
-| `view_outline` / `view_text` | 自查 |
-
-### Excel（.xlsx）
+### 通用工具（三格式共用，6 个）
 
 | 工具 | 作用 |
 |---|---|
-| `create_workbook` | 创建空白工作簿 |
-| `add_sheet` | 新增工作表 |
-| `write_range` | 从 A1 等起点批量写二维数据（表头可加粗） |
-| `write_cell` | 单格值或公式（如 `SUM(B2:B10)`） |
-| `view_sheet` | 自查工作簿内容 |
+| `create_doc` | 创建空白文档（docx/xlsx/pptx） |
+| `add_table` | 加表格（Word 末尾 / Excel 当前表 / PowerPoint 最新页） |
+| `add_image` | 插入图片（Word 文档末尾 / PowerPoint 最新页） |
+| `view_text` | 读文档纯文本（自查） |
+| `validate_doc` | 校验 OpenXML 规范 |
+| `set_doc_properties` | 设置文档属性（标题/作者/主题/关键词） |
 
-### PowerPoint（.pptx）
+### Word 专属（11 个）
 
 | 工具 | 作用 |
 |---|---|
-| `create_presentation` | 创建空白演示文稿 |
-| `add_slide` | 新增一页（标题/正文） |
-| `add_bullets` | 页内要点列表 |
-| `add_slide_table` / `add_slide_image` | 页内表格 / 图片 |
-| `view_outline` / `view_text` | 自查 |
+| `add_title` / `add_heading` | 主标题 / 章节标题 |
+| `add_paragraph` | 正文段落 |
+| `add_list_item` | 列表项（有序/无序） |
+| `add_toc` | 插入目录（自动收录标题） |
+| `add_page_number` | 页脚页码 |
+| `add_header` / `add_footer` | 页眉 / 页脚文字 |
+| `add_hyperlink` | 外部超链接 |
+| `add_word_chart` | 嵌入式图表（自带数据） |
+| `add_section_break` | 分节符（切换横/纵向） |
+
+### Excel 专属（17 个）
+
+| 工具 | 作用 |
+|---|---|
+| `add_sheet` / `rename_sheet` | 添加 / 重命名工作表 |
+| `set_cell` / `set_cells` | 写单个 / 批量写二维数据 |
+| `set_formula` | 写公式（不带 `=`） |
+| `set_column_width` / `autofit_column` | 列宽 / 自动列宽 |
+| `merge_cells` | 合并单元格 |
+| `add_excel_chart` | 加图表（柱形/折线/饼图，引用单元格） |
+| `add_list_table` | 转真 Excel 表格（带样式+筛选） |
+| `set_autofilter` / `sort_sheet` | 自动筛选 / 排序 |
+| `highlight_cells` / `add_color_scale` / `add_data_bar` | 条件格式（高亮/色阶/数据条） |
+| `add_pivot_table` | 透视表（按字段汇总） |
+| `add_dropdown` | 下拉列表（数据验证） |
+
+### PowerPoint 专属（8 个）
+
+| 工具 | 作用 |
+|---|---|
+| `add_slide` | 添加幻灯片（标题+正文占位符模式） |
+| `add_textbox` / `add_slide_table` / `add_slide_image` | 高级：文本框/表格/图片（仅空白页） |
+| `set_slide_transition` | 切换效果（fade/morph/push 等） |
+| `set_slide_notes` | 演讲者备注 |
+| `set_theme_colors` / `set_theme_fonts` | 主题色 / 主题字体 |
+
+### 业务专项 + 控制（3 个）
+
+| 工具 | 作用 |
+|---|---|
+| `query_vehicle` | 按车牌查询车辆信息（交通类文档用，含照片/事故/违法） |
+| `ask_user` | 缺关键信息时向用户提问（触发 interrupt） |
+| `finish` | 宣告完成 |
 
 ## 快速开始
 
@@ -92,25 +124,13 @@ cp .env.example .env
 
 ```bash
 python main.py
-# 或直接带需求（自动识别格式）：
-python main.py "写一份项目周报，包含本周进展、风险、下周计划"   # → .docx
-python main.py "做一份销售月度报表，含区域和金额"                 # → .xlsx
-python main.py "做一份项目汇报 PPT，3 页"                        # → .pptx
+# 或直接带需求：
+python main.py "写一份项目周报，包含本周进展、风险、下周计划"
+python main.py "做一份季度销售数据的 Excel 表格，含图表"
+python main.py "做一个 10 页的产品介绍 PPT"
 ```
 
-终端会彩色展示 agent 每一步的工具调用（`🔧`）和结果（`↳`）；遇到歧义会暂停问你（`❓`，可输候选序号或自由作答）。生成的文件落在 `output/` 目录。
-
-### 忙时交互
-
-Agent 在推理 / 写文档时（未弹出 `ask_user`），仍可直接打字回车：
-
-| 输入 | 行为 |
-|---|---|
-| 普通文字 | **软补充**：排队，下一轮推理时注入，Agent 吸收后继续 |
-| `!内容` / `/force 内容` / `强制:内容` | **强制打断**：当前节点结束后打断，理解新信息后继续 |
-| `继续` / `continue` / `请继续完成` | 暂停后恢复，基于已有文档接着做 |
-| `退出` / `quit` | 结束本次运行 |
-| `Ctrl+C` | **软暂停**（再按一次或输入退出才真正结束） |
+启动时会按需求关键词推断文档类型（excel/ppt/word 关键词命中数最高的胜出；无明确线索时交互问一句）。终端会彩色展示 agent 每一步的工具调用（`🔧`）和结果（`↳`）；遇到歧义会暂停问你（`❓`）。生成的文档落在 `output/` 目录。
 
 ## 配置项
 
@@ -126,34 +146,88 @@ Agent 在推理 / 写文档时（未弹出 `ask_user`），仍可直接打字回
 
 ```
 office-agent/
-├── main.py                      # 终端入口（ReAct 交互循环）
-├── scripts/fetch_officecli.py   # 跨平台下载 officecli
+├── main.py                      # 终端入口（run() 编排 + _stream）
+├── scripts/
+│   ├── fetch_officecli.py       # 跨平台下载 officecli
+│   └── gen_official_templates.py # 生成 15 文种公文模板（GB/T 9704）
 ├── src/office_agent/
 │   ├── config.py                # 配置加载（env > .env > pyproject）
 │   ├── llm.py                   # ChatOpenAI 工厂
-│   ├── officecli.py             # OfficeCLI subprocess 封装 + DocTool
-│   ├── tools.py                 # @tool 工具集 + 会话注入
-│   ├── prompts.py               # 分格式系统提示词（Word/Excel/PPT）
-│   ├── format_detect.py         # 需求 → docx/xlsx/pptx
+│   ├── cli_runner.py            # officecli subprocess 执行器 + OfficeCLIError + merge_template
+│   ├── doc_tool.py              # Word 文档操作（DocTool）
+│   ├── excel_tool.py            # Excel 工作簿操作（ExcelTool）
+│   ├── pptx_tool.py             # PowerPoint 演示文稿操作（PptxTool）
+│   ├── officecli.py             # 向后兼容门面（re-export 上述 4 模块）
+│   ├── tools/                   # @tool 工具集包
+│   │   ├── __init__.py          # 会话基础设施 + ALL_TOOLS/TOOL_BY_NAME 聚合
+│   │   ├── common.py            # 通用工具 + 控制（ask_user/finish）+ 公文（start_from_template）
+│   │   ├── doc.py               # Word 专属工具（含 update_paragraph/replace_text/remove_paragraph）
+│   │   ├── excel.py             # Excel 专属工具
+│   │   └── pptx.py              # PowerPoint 专属工具
+│   ├── templates.py             # 15 文种元数据 + 文种识别 + merge 数据
+│   ├── prompts.py               # 系统提示词（Word/Excel/PPT/公文 4 分支）
+│   ├── cli_ui.py                # 终端 UI 辅助（从 main.py 下沉）
 │   ├── state.py                 # 极简 state（messages + doc_path + done）
-│   ├── user_input.py            # 忙时 stdin 桥（补充 / 强制打断 / 继续）
 │   └── graph.py                 # ReAct agent 图装配
+├── template/word/               # 15 文种公文模板（GB/T 9704）
+├── tests/                       # 测试套件（pytest）
+│   ├── conftest.py              # FakeRunner + session fixture
+│   ├── test_*.py                # 单元测试（默认跑）
+│   ├── integration/             # 集成测试（@pytest.mark.integration，默认 skip）
+│   └── llm/                     # LLM 端到端（@pytest.mark.llm，默认 skip）
 ├── bin/                         # officecli 二进制（gitignore）
-└── output/                      # 生成的 docx（gitignore）
+└── output/                      # 生成的文档（gitignore）
 ```
 
 ## 设计要点
 
-- **DeepSeek tool_calls**：`llm.bind_tools(tools)`（实测可行）；注意 DeepSeek 不支持 `response_format`（json schema）和强制 `tool_choice`（thinking 模式冲突），所以用普通 `bind_tools` 而非 `with_structured_output`。
+- **DeepSeek tool_calls**：`llm.bind_tools(tools)`；不强制 `tool_choice`，不用 `response_format`（thinking 模式冲突）。
 - **手写 tools 节点**：比内置 `ToolNode` 灵活，能处理 `ask_user` 的 `interrupt` 挂起和 `finish` 的短路完成。
-- **会话级 doc_path 注入**：main.py 启动时确定输出路径，所有工具共享，LLM 不需传路径参数。
-- **finish 显式结束**：比"无 tool_calls 即结束"更可靠，LLM 主动宣告完成。
-- **中文 UTF-8**：subprocess 强制 `encoding='utf-8'`，JSON 通过 `--commands` argv 传递（stdin 传中文会乱码）。
-- **显式格式 props**：默认 docx 缺 Heading/Title 样式，用 `size`/`bold`/`listStyle` 等显式 props 确保格式生效。
+- **会话级 doc_path 注入**：main.py 启动时按需求推断文档类型和输出路径，所有工具共享，LLM 不需传路径参数。
+- **扩展名路由**：`tools._tool()` 工厂按 `.docx/.xlsx/.pptx` 后缀返回对应 Tool 类；通用工具跨格式，专属工具在其他格式下给出明确引导。
+- **公文模式**：识别 15 法定文种 → 从 GB/T 9704 模板创建 → LLM 用 update_paragraph/replace_text/remove_paragraph 编辑正文（保字体）。
+- **finish 显式结束**：比"无 tool_calls 即结束"更可靠。
+- **中文 UTF-8**：subprocess 强制 `encoding='utf-8'`，JSON 通过 `--commands` argv 传递。
+- **显式格式 props**：默认 docx 缺 Heading/Title 样式，用 `size`/`bold` 等显式 props 确保格式生效。
+- **门面模式保兼容**：`officecli.py` 拆分后保留为 re-export 门面，`from office_agent.officecli import X` 零改动。
 
-## 扩展
+## 开发
 
-- 图片、页眉页脚、分页、查找替换、batch_add 已内置；如需 TOC/水印/超链接等，在 `tools.py` 加 `@tool` + `officecli.py` 的 DocTool 加对应方法。
+### 测试
+
+```bash
+# 单元测试（默认，毫秒级，全 mock 不碰外部）
+uv run pytest
+
+# 集成测试（真调 officecli.exe，需 Windows + Office）
+uv run pytest -m integration
+
+# LLM 端到端（真调 API，耗 token）
+uv run pytest -m llm
+
+# 全跑（含集成 + LLM）
+uv run pytest -m ""
+
+# 覆盖率报告
+uv run pytest --cov-report=html  # 生成 htmlcov/
+```
+
+测试分层（详见 `tests/`）：
+- **单元测试**（默认跑，~310 用例）：纯函数 + FakeRunner mock，覆盖 templates/prompts/vehicle/cli_ui/officecli/tools/graph。覆盖率门槛 65%。
+- **集成测试**（`@pytest.mark.integration` 默认 skip）：真调 officecli.exe，验证 create/add/view/merge/validate 端到端。
+- **LLM 端到端**（`@pytest.mark.llm` 默认 skip）：真跑 agent 生成公文，验证完整链路。
+
+### 质量工具
+
+```bash
+uv run ruff format .        # 格式化
+uv run ruff check .         # lint
+uv run mypy src/            # 类型检查
+```
+
+### 扩展
+
+- 如需更多 officecli 能力（条件格式、数据透视表、幻灯片切换动画、SmartArt 等），在 `doc_tool.py`/`excel_tool.py`/`pptx_tool.py` 对应类加方法 + `tools/doc.py`/`excel.py`/`pptx.py` 加 `@tool`。命令面参考 `officecli help <format> <element>`。
 - 接 Web UI：`main.py` 的 interrupt/resume 循环可替换为 WebSocket / HTTP 端点。
 
 ## 许可

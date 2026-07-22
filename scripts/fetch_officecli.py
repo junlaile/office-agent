@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import platform
 import stat
@@ -21,6 +22,8 @@ import sys
 from pathlib import Path
 
 import httpx
+
+logger = logging.getLogger("fetch_officecli")
 
 REPO = "iOfficeAI/OfficeCLI"
 # GitHub API 取 latest release
@@ -91,9 +94,9 @@ def pick_asset(release: dict, asset_base: str) -> dict:
 
 
 def download(url: str, dest: Path, label: str) -> None:
-    print(f"[下载] {label}")
-    print(f"       <- {url}")
-    print(f"       -> {dest}")
+    logger.info("下载 %s", label)
+    logger.info("       <- %s", url)
+    logger.info("       -> %s", dest)
     with httpx.Client(timeout=None, follow_redirects=True) as client:
         with client.stream("GET", url) as resp:
             resp.raise_for_status()
@@ -106,11 +109,13 @@ def download(url: str, dest: Path, label: str) -> None:
                     if total:
                         pct = done * 100 // total
                         bar = "#" * (pct // 2) + "." * (50 - pct // 2)
+                        # 进度条只能直接写 stdout（日志会破坏 \r 刷新）
                         sys.stdout.write(f"\r       [{bar}] {pct:3d}% ")
                         sys.stdout.flush()
-            print()
+            sys.stdout.write("\n")
+            sys.stdout.flush()
     size_mb = dest.stat().st_size / (1 << 20)
-    print(f"       完成 {size_mb:.1f} MB")
+    logger.info("       完成 %.1f MB", size_mb)
 
 
 def sha256(path: Path) -> str:
@@ -127,7 +132,7 @@ def verify_checksum(asset_file: str, binary_path: Path, release: dict) -> bool:
         (a for a in release.get("assets", []) if a["name"] == "SHA256SUMS"), None
     )
     if not sums_asset:
-        print("[校验] release 未提供 SHA256SUMS，跳过校验")
+        logger.info("release 未提供 SHA256SUMS，跳过校验")
         return True
     try:
         with httpx.Client(timeout=30, follow_redirects=True) as client:
@@ -139,37 +144,45 @@ def verify_checksum(asset_file: str, binary_path: Path, release: dict) -> bool:
                     expected = parts[0]
                     actual = sha256(binary_path)
                     if actual != expected:
-                        print(f"[校验] 失败: 期望 {expected}, 实际 {actual}")
+                        logger.warning("SHA256 校验失败: 期望 %s, 实际 %s", expected, actual)
                         return False
-                    print("[校验] SHA256 通过")
+                    logger.info("SHA256 校验通过")
                     return True
-        print("[校验] SHA256SUMS 中未找到对应条目，跳过")
+        logger.info("SHA256SUMS 中未找到对应条目，跳过")
         return True
     except Exception as e:  # noqa: BLE001
-        print(f"[校验] 跳过（{e}）")
+        logger.warning("SHA256 校验跳过（%s）", e)
         return True
 
 
 def main() -> int:
+    # 此脚本独立运行，自配日志（不依赖 office_agent.config）
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     asset_base = detect_asset()
-    print(f"[检测] 平台: {platform.system()} {platform.machine()} -> asset 基名: {asset_base}")
+    logger.info("检测平台: %s %s -> asset 基名: %s",
+                platform.system(), platform.machine(), asset_base)
 
     try:
         release = get_latest_release()
     except Exception as e:  # noqa: BLE001
-        print(f"[错误] 获取最新 release 失败: {e}")
+        logger.error("获取最新 release 失败: %s", e)
         proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
         if not proxy:
-            print(
-                "[提示] 若网络受限，请设置代理后重试：\n"
+            logger.info(
+                "若网络受限，请设置代理后重试：\n"
                 "       Windows (PowerShell): $env:HTTPS_PROXY='http://127.0.0.1:7890'\n"
                 "       Linux/macOS: export HTTPS_PROXY=http://127.0.0.1:7890"
             )
         return 1
 
     tag = release.get("tag_name", "unknown")
-    print(f"[版本] 最新 release: {tag}")
+    logger.info("最新 release: %s", tag)
 
     asset = pick_asset(release, asset_base)
     asset_name = asset["name"]
@@ -184,9 +197,9 @@ def main() -> int:
     if not is_win:
         final_path.chmod(final_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    print(f"\n[完成] {final_path}")
-    print(f"       运行 '{final_path} --version' 验证。")
-    print(f"       OFFICECLI_BIN 可指向该路径，或将其加入 PATH。")
+    logger.info("完成: %s", final_path)
+    logger.info("       运行 '%s --version' 验证。", final_path)
+    logger.info("       OFFICECLI_BIN 可指向该路径，或将其加入 PATH。")
     return 0
 
 

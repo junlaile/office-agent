@@ -17,3 +17,9 @@ output/
 
 # 本地环境变量（含 API key，勿提交）
 .env
+
+# IDE / 覆盖率产物
+.idea/
+.coverage
+htmlcov/
+.pytest_cache/
