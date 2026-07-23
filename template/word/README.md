@@ -88,7 +88,8 @@ python main.py "写一份关于做好2026年夏季防汛工作的通知"
 # → 启用公文模式系统提示词，agent 编辑正文范例文字
 ```
 
-文种识别（`office_agent.templates.detect_doc_type`）覆盖 15 个文种的关键词，
+文种识别（`office_agent.domain.templates.detect_doc_type`）覆盖 15 个文种的关键词，
+
 上行文（请示/报告/议案）优先级最高，批复对"请示"做特殊优先处理。
 未命中关键词（如"项目周报""调研报告""Excel 表格"）走普通生成流程。
 

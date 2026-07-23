@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from langchain_openai import ChatOpenAI
 
-from .config import settings
+from office_agent.config import settings
 
 
 def get_llm(*, streaming: bool = False) -> ChatOpenAI:

@@ -1,4 +1,4 @@
-"""cli_ui.py 的 UI 输出函数测试（用 capsys 捕获 print）。
+﻿"""cli_ui.py 的 UI 输出函数测试（用 capsys 捕获 print）。
 
 这些函数（_banner / _print_agent_step / _print_tool_results / _check_officecli）
 都往 stdout 输出，用 capsys 断言。
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from office_agent import cli_ui
-from office_agent.cli_ui import (
+from office_agent.cli import ui as cli_ui
+from office_agent.cli.ui import (
     _banner,
     _check_officecli,
     _print_agent_step,

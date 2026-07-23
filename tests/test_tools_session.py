@@ -1,4 +1,4 @@
-"""tools 包测试：session 路由 + 工具转发 + start_from_template 编排。
+﻿"""tools 包测试：session 路由 + 工具转发 + start_from_template 编排。
 
 通过 set_session_doc 注入会话路径，monkeypatch merge_template / DocTool 方法
 断言转发逻辑，不碰真实 officecli.exe。
@@ -35,7 +35,7 @@ class TestSessionRouting:
 
     def test_uninitialized_raises(self):
         """未初始化 session 时 session_doc_kind 抛错。"""
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         set_session_doc(None)
         with pytest.raises(OfficeCLIError):
@@ -122,7 +122,7 @@ class TestStartFromTemplate:
 
     def test_merge_failure_returns_error(self, doc_session, monkeypatch):
         """merge 失败时返回错误而非崩溃。"""
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         def failing_merge(*a, **k):
             raise OfficeCLIError("merge 失败")

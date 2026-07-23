@@ -1,4 +1,4 @@
-"""graph.py 路由与工具节点测试（不碰 LLM）。
+﻿"""graph.py 路由与工具节点测试（不碰 LLM）。
 
 构造假 AIMessage state，验证 _route_after_agent / _route_after_tools / _tools_node
 / _nudge_node 的路由与短路逻辑。
@@ -9,7 +9,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langgraph.graph import END
 
-from office_agent.graph import (
+from office_agent.agent.graph import (
     _MAX_NUDGE,
     _count_idle_turns,
     _nudge_node,

@@ -20,7 +20,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from .config import settings
+from office_agent.config import settings
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-"""pytest 全局 fixture 与配置。
+﻿"""pytest 全局 fixture 与配置。
 
 核心设施:
     - FakeRunner: 替代真实 officecli.exe subprocess 的假执行器，记录 argv 供断言。
@@ -15,14 +15,7 @@ from typing import Any
 
 import pytest
 
-# 把 src/ 加入 sys.path（项目是 src 布局，但测试通过 import office_agent 走 src）
-_SRC = Path(__file__).resolve().parent.parent / "src"
-import sys
-
-if str(_SRC) not in sys.path:
-    sys.path.insert(0, str(_SRC))
-
-from office_agent.tools import set_session_doc  # noqa: E402
+from office_agent.tools import set_session_doc
 
 
 # ============================================================
@@ -92,12 +85,12 @@ class FakeRunner:
 
 @pytest.fixture
 def fake_runner(monkeypatch):
-    """注入一个 FakeRunner 到 cli_runner 模块的单例位置。
+    """注入一个 FakeRunner 到 office.runner 模块的单例位置。
 
-    ``get_runner()`` 读的是 ``cli_runner._runner`` 全局，所以必须 patch
-    cli_runner 模块（而非 officecli 门面）。fixture 结束 monkeypatch 自动恢复。
+    ``get_runner()`` 读的是 ``runner._runner`` 全局，所以必须 patch
+    office.runner 模块（而非 officecli 门面）。fixture 结束 monkeypatch 自动恢复。
     """
-    from office_agent import cli_runner as runner_module
+    from office_agent.office import runner as runner_module
 
     fake = FakeRunner()
     monkeypatch.setattr(runner_module, "_runner", fake)

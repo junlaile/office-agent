@@ -2,25 +2,27 @@
 
 历史上本模块包含全部 officecli 封装代码（~1580 行）。现已按职责拆分为:
 
-    - :mod:`office_agent.cli_runner`:  底层 subprocess 执行器（``_Runner``）、
-      ``OfficeCLIError``、``resolve_bin``、``raw``、``merge_template`` 等基础设施。
-    - :mod:`office_agent.doc_tool`:    Word 文档操作（``DocTool``）。
-    - :mod:`office_agent.excel_tool`:  Excel 工作簿操作（``ExcelTool``）。
-    - :mod:`office_agent.pptx_tool`:   PowerPoint 演示文稿操作（``PptxTool``）。
+    - :mod:`office_agent.office.runner`: subprocess 执行器、``OfficeCLIError`` 等。
+    - :mod:`office_agent.office.doc`:    Word 文档操作（``DocTool``）。
+    - :mod:`office_agent.office.excel`:  Excel 工作簿操作（``ExcelTool``）。
+    - :mod:`office_agent.office.pptx`:   PowerPoint 演示文稿操作（``PptxTool``）。
 
 本文件保留为**向后兼容门面**——所有公开符号从这里 re-export，现有代码的
 ``from office_agent.officecli import X`` 不需要任何改动。
 
 新的代码应直接从对应职责模块 import，例如::
 
-    from office_agent.doc_tool import DocTool
-    from office_agent.cli_runner import OfficeCLIError, merge_template
+    from office_agent.office.doc import DocTool
+    from office_agent.office.runner import OfficeCLIError, merge_template
 """
 
 from __future__ import annotations
 
 # Re-export 所有公开符号，保兼容
-from .cli_runner import (  # noqa: F401
+from .office.doc import DocTool  # noqa: F401
+from .office.excel import ExcelTool  # noqa: F401
+from .office.pptx import PptxTool  # noqa: F401
+from .office.runner import (  # noqa: F401
     _RAW_WHITELIST,
     OfficeCLIError,
     _Runner,
@@ -30,9 +32,6 @@ from .cli_runner import (  # noqa: F401
     reset_runner,
     resolve_bin,
 )
-from .doc_tool import DocTool  # noqa: F401
-from .excel_tool import ExcelTool  # noqa: F401
-from .pptx_tool import PptxTool  # noqa: F401
 
 __all__ = [
     "OfficeCLIError",

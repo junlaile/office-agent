@@ -1,4 +1,4 @@
-"""templates.py 单元测试：15 文种识别 + merge 数据构造。
+﻿"""templates.py 单元测试：15 文种识别 + merge 数据构造。
 
 全部纯函数，无外部依赖（detect_doc_type/default_merge_data/is_upward/is_meeting
 不碰文件系统；template_path 只算路径不检查存在）。
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from office_agent.templates import (
+from office_agent.domain.templates import (
     DOC_BY_NAME,
     DOC_TYPE_NAMES,
     OFFICIAL_DOCS,

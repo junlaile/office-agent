@@ -9,7 +9,7 @@ GB/T 9704 模板到输出路径，并传 doc_type 让本模块走 _OFFICIAL_BRAN
 此时文档已含完整版头/版记/页码，agent 只需编辑正文范例文字。
 """
 
-from .templates import is_upward
+from office_agent.domain.templates import is_upward
 
 # 三种文档类型的标识，供 build_system_prompt 选用对应分支
 _KIND_BRANCH = {
@@ -64,9 +64,10 @@ _WORD_BRANCH = """\
 ## 本会话任务：生成 Word 文档（.docx）
 
 ### 工作流程
-1. 先在脑内规划文档结构（标题、章节、每节要点），但不要输出规划，直接开始调用工具。
+1. 若系统提示中含【已批准的文档大纲】：严格按该大纲结构写，不要重新规划或擅自增删大章节。
+   若无批准大纲：先在脑内规划结构，但不要输出规划，直接开始调用工具。
 2. 第一步调用 create_doc 创建空文档（只调一次）。
-3. 调用 add_title 添加文档主标题（整篇只一次）。
+3. 调用 add_title 添加文档主标题（整篇只一次；标题与大纲一级标题一致）。
 4. 按章节顺序，用 add_heading 添加章节标题，紧跟用 add_paragraph / add_list_item / add_table 填充内容。
 5. 内容写完即可调用 finish 宣告完成（无需一定 view_text，除非你担心漏写或顺序错乱）。
 
@@ -196,24 +197,25 @@ _OFFICIAL_BRANCH = """\
 【不要】调 create_doc（会破坏模板），【不要】重建版头版记。
 
 ### 工作流程（务必按序）
-1. 【先 view_text】通读模板，看清楚每段范例文字和它的路径（view_text 输出方括号里）。
+1. 若系统提示含【已批准的文档大纲】：正文要点与章节顺序以大纲为准，不要另起炉灶。
+2. 【先 view_text】通读模板，看清楚每段范例文字和它的路径（view_text 输出方括号里）。
    路径有两种形式，都可用于 update_paragraph/remove_paragraph:
      /body/p[N]              位置式（初始模板用这种，N 是 1-based 段序）
      /body/p[@paraId=ID]     稳定式（编辑后新段可能用这种，删段后不错位）
    以 view_text 实际输出的为准，照抄即可。
-2. 【改标题和主送】模板里是范例标题/主送（如"XX市XX机关关于做好XX工作的通知"），
-   用 update_paragraph 整段替换成真实内容:
+3. 【改标题和主送】模板里是范例标题/主送（如"XX市XX机关关于做好XX工作的通知"），
+   用 update_paragraph 整段替换成真实内容（标题对齐大纲）:
      update_paragraph(path='/body/p[4]', text='市公安局关于做好2026年防汛工作的通知')
      update_paragraph(path='/body/p[5]', text='各区公安分局，市局各处室：')
-3. 【编辑正文】把范例里的 "XX"、"XX工作" 等占位换成真实内容。优先用 replace_text
+4. 【编辑正文】把范例里的 "XX"、"XX工作" 等占位换成真实内容。优先用 replace_text
    （保留字体格式），把整篇的通用占位一次性替换:
      replace_text(find='XX工作', replace='防汛工作')        # 全文替换，保仿宋字体
      replace_text(find='XX局', replace='应急局', path='/body/p[5]')  # 只改主送段
-4. 【精简/补充正文】模板的范例段数可能与用户实际需要的不符:
+5. 【精简/补充正文】模板的范例段数可能与用户实际需要的不符:
    - 删多余范例段: remove_paragraph(path='/body/p[10]')（从后往前删，避免索引错乱）
    - 补新正文段:   add_paragraph(text='三、下一步工作要求\\n（一）...')  （末尾追加）
-5. view_text 自查：版头正确、正文替换干净（无残留 XX）、层级序号规范。
-6. finish。
+6. view_text 自查：版头正确、正文替换干净（无残留 XX）、层级序号规范。
+7. finish。
 
 ### 模板结构（典型，具体以 view_text 为准）
   /body/p[1]  发文机关标志（红色大字，版头）——【保留，勿删】
@@ -305,12 +307,24 @@ _TEMPLATE_CONTEXT = """\
 - 编辑后仍可调 view_text 自查结果（删段会导致后续索引前移，自查更稳）。
 """
 
+_APPROVED_OUTLINE = """\
+
+### 【已批准的文档大纲】（必须遵守）
+{outline}
+
+约束:
+- 按上述大纲的章节与要点顺序生成/编辑内容，不得擅自增删大章节。
+- 大纲中标「待确认」的事实：用 ask_user 向用户确认，禁止臆造。
+- 不要向用户再次索要整份大纲批准（已批准）；直接开始写文档。
+"""
+
 
 def build_system_prompt(
     doc_path: str,
     doc_type: str | None = None,
     *,
     template_text: str = "",
+    approved_outline: str = "",
 ) -> str:
     """构造系统提示词。
 
@@ -321,6 +335,8 @@ def build_system_prompt(
     template_text（仅公文模式有意义）：已读取的模板正文（view_text 的输出，
     带路径标注）。非空时注入提示词，让 LLM 无需再自调 view_text 即可看到
     段落结构、照路径编辑——把"靠 LLM 听话读模板"变成"上下文里已有"。
+
+    approved_outline：用户已批准的 Markdown 大纲；非空时注入，要求按大纲写。
     """
     p = doc_path.lower()
     if p.endswith(".xlsx"):
@@ -358,11 +374,16 @@ def build_system_prompt(
         # 普通模式：补回 create_doc 规则（从 _COMMON_RULES 拆出，仅此模式需要）
         common_rules = _COMMON_RULES + "\n" + _CREATE_DOC_RULE
 
+    outline_block = ""
+    if approved_outline.strip():
+        outline_block = _APPROVED_OUTLINE.format(outline=approved_outline.strip())
+
     return (
         f"你是一个专业的 Office 文档生成 Agent。当前会话要生成的是 "
         f"【{role_desc}】文档。\n"
         f"{mode_hint}\n\n"
         f"{branch}\n"
+        f"{outline_block}"
         f"{_VEHICLE_RULES}\n"
         f"{common_rules}\n"
         f"【当前会话】生成的文档将保存到: {doc_path}\n"

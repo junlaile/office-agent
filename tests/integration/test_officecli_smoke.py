@@ -1,4 +1,4 @@
-"""officecli.exe 冒烟集成测试（真调二进制）。
+﻿"""officecli.exe 冒烟集成测试（真调二进制）。
 
 标记 @pytest.mark.integration，默认 skip（单测不应依赖外部二进制）。
 显式运行：``uv run pytest -m integration``
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from office_agent.doc_tool import DocTool
+from office_agent.office.doc import DocTool
 from office_agent.officecli import resolve_bin
 
 pytestmark = pytest.mark.integration

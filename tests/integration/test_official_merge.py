@@ -1,4 +1,4 @@
-"""公文模板 merge 集成测试（真调 officecli + 真实模板）。
+﻿"""公文模板 merge 集成测试（真调 officecli + 真实模板）。
 
 标记 @pytest.mark.integration，默认 skip。
 显式运行：``uv run pytest -m integration -k official_merge``
@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from office_agent.officecli import merge_template
-from office_agent.templates import OFFICIAL_DOCS, default_merge_data, template_path
+from office_agent.domain.templates import OFFICIAL_DOCS, default_merge_data, template_path
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +36,7 @@ def test_merge_creates_file(merged_output):
 def test_merge_no_residual_placeholders(merged_output):
     """merge 后无 {{key}} 残留。"""
     # 用 view_text 读（需 DocTool）
-    from office_agent.doc_tool import DocTool
+    from office_agent.office.doc import DocTool
 
     text = DocTool(merged_output).view_text()
     assert "{{" not in text
@@ -45,7 +45,7 @@ def test_merge_no_residual_placeholders(merged_output):
 
 def test_merge_filled_org(merged_output):
     """org 槽位被真实值替换。"""
-    from office_agent.doc_tool import DocTool
+    from office_agent.office.doc import DocTool
 
     text = DocTool(merged_output).view_text()
     assert "市公安局" in text
@@ -64,7 +64,7 @@ def test_all_15_templates_merge(tmp_path):
 
 def test_merged_passes_validation(merged_output):
     """merge 产物通过 OpenXML 校验。"""
-    from office_agent.doc_tool import DocTool
+    from office_agent.office.doc import DocTool
 
     result = DocTool(merged_output).validate()
     assert "passed" in result.lower() or "no errors" in result.lower()

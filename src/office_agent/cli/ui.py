@@ -1,10 +1,12 @@
 """终端 UI 辅助：需求读取、文档类型推断、工具调用展示、interrupt 交互。
 
-从 main.py 下沉而来，让 main.py 只保留 run() 编排。这些函数中：
+从 main.py 下沉而来，让 cli.main 只保留 run() 编排。这些函数中：
     - 纯函数（_infer_doc_kind / _format_tool_call / _indent / _derive_doc_path /
-      _prepare_official_doc）可独立单元测试，不受 main.py 的 sys.path 副作用影响。
-    - UI 函数（_banner / _print_* / _collect_* / _handle_interrupt / _stream）
+      _prepare_official_doc）可独立单元测试。
+    - UI 函数（_banner / _print_* / _collect_* / _handle_interrupt）
       涉及 input/print，测试需 capsys/monkeypatch。
+    - 所有交互输入经 ``_readline``：有 UserInputBridge 时走 blocking_readline，
+      避免与忙时读线程抢 stdin。
 """
 
 from __future__ import annotations
@@ -17,15 +19,25 @@ from datetime import datetime
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
+from office_agent.cli.user_input import get_bridge
 from office_agent.config import settings
-from office_agent.doc_tool import DocTool
-from office_agent.officecli import OfficeCLIError, merge_template, resolve_bin
-from office_agent.templates import (
+from office_agent.domain.format import infer_doc_kind
+from office_agent.domain.templates import (
     default_merge_data,
     template_path,
 )
+from office_agent.office.doc import DocTool
+from office_agent.officecli import OfficeCLIError, merge_template, resolve_bin
 
-logger = logging.getLogger("office_agent.cli_ui")
+logger = logging.getLogger("office_agent.cli.ui")
+
+
+def _readline(prompt: str = "") -> str:
+    """统一读一行：优先走 UserInputBridge，否则回退 builtin input。"""
+    bridge = get_bridge()
+    if bridge is not None:
+        return bridge.blocking_readline(prompt)
+    return input(prompt)
 
 # ANSI 颜色（Windows 10+ 终端支持）
 _CYAN = "[36m"
@@ -71,7 +83,7 @@ def _read_requirement() -> str:
     print(f"{_DIM}  · 做一个 10 页的产品介绍 PPT{_RESET}\n")
     while True:
         try:
-            req = input(f"{_CYAN}❯ {_RESET}").strip()
+            req = _readline(f"{_CYAN}❯ {_RESET}").strip()
         except (EOFError, KeyboardInterrupt):
             print(f"\n{_YELLOW}已取消。{_RESET}")
             sys.exit(0)
@@ -80,67 +92,9 @@ def _read_requirement() -> str:
         print(f"{_YELLOW}需求不能为空，请重新输入。{_RESET}")
 
 
-# 文档类型推断：关键词 → 扩展名。命中数越多置信度越高。
-_XLSX_KEYWORDS = [
-    "excel",
-    "表格",
-    "报表",
-    "数据表",
-    "工作表",
-    "spreadsheet",
-    "财务模型",
-    "预算表",
-    "销售数据",
-    "库存表",
-    "工资表",
-]
-_PPTX_KEYWORDS = [
-    "ppt",
-    "pptx",
-    "幻灯片",
-    "演示",
-    "汇报",
-    "演讲",
-    "宣讲",
-    "课件",
-    "路演",
-    "deck",
-    "slides",
-    "presentation",
-    "powerpoint",
-]
-_DOCX_KEYWORDS = [
-    "word",
-    "doc",
-    "文档",
-    "报告",
-    "说明",
-    "方案",
-    "总结",
-    "周报",
-    "月报",
-    "通知",
-    "规章",
-    "制度",
-    "文章",
-    "论文",
-]
-
-
 def _infer_doc_kind(requirement: str) -> tuple[str, int]:
-    """从需求关键词推断文档类型。返回 (kind, 命中数)。
-
-    kind ∈ {'docx','xlsx','pptx'}；命中数越高置信度越高（0 表示无明确线索）。
-    平局时优先级 xlsx > pptx > docx（因为 docx 是默认值，能往后让）。
-    """
-    text = requirement.lower()
-    scores = {
-        "xlsx": sum(1 for k in _XLSX_KEYWORDS if k in text),
-        "pptx": sum(1 for k in _PPTX_KEYWORDS if k in text),
-        "docx": sum(1 for k in _DOCX_KEYWORDS if k in text),
-    }
-    kind = max(scores, key=lambda k: (scores[k], {"xlsx": 2, "pptx": 1, "docx": 0}[k]))
-    return kind, scores[kind]
+    """从需求关键词推断文档类型（委托 domain.format）。"""
+    return infer_doc_kind(requirement)
 
 
 def _ask_doc_kind() -> str:
@@ -151,7 +105,7 @@ def _ask_doc_kind() -> str:
     print(f"{_DIM}  3. PowerPoint 演示（汇报/演讲）{_RESET}")
     while True:
         try:
-            ans = input(f"{_CYAN}选 [1-3] ❯ {_RESET}").strip()
+            ans = _readline(f"{_CYAN}选 [1-3] ❯ {_RESET}").strip()
         except (EOFError, KeyboardInterrupt):
             print(f"\n{_YELLOW}已取消。{_RESET}")
             sys.exit(0)
@@ -228,6 +182,85 @@ def _prepare_official_doc(doc_type: str, doc_path: str) -> tuple[str | None, str
     print(f"{_GREEN}✓ 已从 GB/T 9704 模板创建{_RESET}")
     print(f"{_DIM}  模板: {tmpl.name} | 版头槽位已预填占位值，正文待 agent 编辑{_RESET}")
     return doc_type, template_text
+
+
+def _print_outline_preview(outline: str) -> None:
+    """终端展示 Markdown 大纲预览。"""
+    print(f"\n{_BOLD}{_CYAN}┌─ 文档大纲预览 ", end="")
+    pad = max(0, 44 - 10)
+    print("─" * pad + f"┐{_RESET}")
+    for line in (outline or "").splitlines() or ["（空大纲）"]:
+        print(f"{_CYAN}│{_RESET} {line}")
+    print(f"{_CYAN}└" + "─" * 52 + f"┘{_RESET}")
+
+
+def _collect_outline_decision() -> tuple[str, str]:
+    """收集用户对大纲的决定。
+
+    返回 ``(action, feedback)``，其中 action ∈ approve|revise|cancel；
+    仅 revise 时 feedback 非空（可能仍为空串若用户回车）。
+    """
+    print(f"\n{_BOLD}请确认大纲:{_RESET}")
+    print(f"{_DIM}  1. 批准生成 Word{_RESET}")
+    print(f"{_DIM}  2. 提出修改意见（修订大纲后再预览）{_RESET}")
+    print(f"{_DIM}  3. 取消{_RESET}")
+    while True:
+        try:
+            ans = _readline(f"{_CYAN}选 [1-3] ❯ {_RESET}").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{_YELLOW}已取消。{_RESET}")
+            return "cancel", ""
+        low = ans.lower()
+        if ans in ("1",) or low in ("批准", "approve", "y", "yes", "ok"):
+            return "approve", ""
+        if ans in ("2",) or low in ("修改", "revise", "改"):
+            try:
+                fb = _readline(f"{_CYAN}修改意见 ❯ {_RESET}").strip()
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n{_YELLOW}已取消。{_RESET}")
+                return "cancel", ""
+            return "revise", fb
+        if ans in ("3",) or low in ("取消", "cancel", "n", "no", "q"):
+            return "cancel", ""
+        print(f"{_YELLOW}请输入 1/2/3 或 批准/修改/取消。{_RESET}")
+
+
+def _run_outline_approval_loop(
+    requirement: str,
+    doc_type: str | None = None,
+) -> str | None:
+    """生成并展示大纲，循环至用户批准或取消。
+
+    返回批准后的大纲文本；取消返回 None。
+    """
+    from office_agent.agent.outline import generate_outline
+
+    feedback = ""
+    while True:
+        print(f"\n{_DIM}正在生成文档大纲预览…{_RESET}")
+        try:
+            outline = generate_outline(
+                requirement, feedback=feedback, doc_type=doc_type
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("大纲生成失败")
+            print(f"{_RED}大纲生成失败: {e}{_RESET}")
+            print(f"{_DIM}可输入修改意见重试，或取消。{_RESET}")
+            outline = f"（生成失败）{e}"
+        _print_outline_preview(outline)
+        action, feedback = _collect_outline_decision()
+        if action == "approve":
+            if outline.startswith("（生成失败）"):
+                print(f"{_YELLOW}大纲无效，请选择修改重试或取消。{_RESET}")
+                continue
+            print(f"{_GREEN}✓ 大纲已批准，开始生成 Word…{_RESET}")
+            return outline
+        if action == "cancel":
+            print(f"{_YELLOW}已取消，未生成文档。{_RESET}")
+            return None
+        # revise: feedback 已填，继续循环
+        if not feedback:
+            print(f"{_YELLOW}未填写修改意见，将按原需求重新生成。{_RESET}")
 
 
 def _indent(text: str, pad: str = "    ") -> str:
@@ -404,7 +437,7 @@ def _collect_single_question(payload: dict) -> str:
     print()
     while True:
         try:
-            ans = input(f"{_CYAN}答 ❯ {_RESET}").strip()
+            ans = _readline(f"{_CYAN}答 ❯ {_RESET}").strip()
         except (EOFError, KeyboardInterrupt):
             print(f"\n{_YELLOW}已取消。{_RESET}")
             sys.exit(0)
@@ -456,7 +489,7 @@ def _collect_form(payload: dict) -> dict:
         # 逐字段输入循环（必填校验）
         while True:
             try:
-                val = input(f"{_YELLOW}│{_RESET} {_CYAN}❯ {_RESET}").strip()
+                val = _readline(f"{_YELLOW}│{_RESET} {_CYAN}❯ {_RESET}").strip()
             except (EOFError, KeyboardInterrupt):
                 print(f"\n{_YELLOW}已取消。{_RESET}")
                 sys.exit(0)

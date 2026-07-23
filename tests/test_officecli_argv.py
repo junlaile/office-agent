@@ -1,4 +1,4 @@
-"""officecli 封装的 argv 断言测试：注入 FakeRunner，验证生成的命令参数数组。
+﻿"""officecli 封装的 argv 断言测试：注入 FakeRunner，验证生成的命令参数数组。
 
 不真调 officecli.exe。FakeRunner 把每次 run(args) 的 args 存下来供断言。
 """
@@ -9,9 +9,9 @@ import json
 
 import pytest
 
-from office_agent.doc_tool import DocTool
-from office_agent.excel_tool import ExcelTool
-from office_agent.pptx_tool import PptxTool
+from office_agent.office.doc import DocTool
+from office_agent.office.excel import ExcelTool
+from office_agent.office.pptx import PptxTool
 
 
 # ============================================================
@@ -133,7 +133,7 @@ class TestDocToolArgv:
 
     def test_set_paragraph_text_empty_raises(self, fake_runner, tmp_path):
         """空 path/text 抛错。"""
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         tool = DocTool(str(tmp_path / "t.docx"))
         with pytest.raises(OfficeCLIError):
@@ -259,7 +259,7 @@ class TestPptxToolArgv:
 class TestMergeTemplate:
     def test_merge_argv(self, fake_runner):
         """merge_template: merge tmpl output --data <json> --force。"""
-        from office_agent.cli_runner import merge_template
+        from office_agent.office.runner import merge_template
 
         merge_template("/tmpl.docx", "/out.docx", {"org": "局"})
         call = find_call(fake_runner, "merge")
@@ -274,7 +274,7 @@ class TestMergeTemplate:
 
     def test_merge_chinese_not_escaped(self, fake_runner):
         """JSON 用 ensure_ascii=False，中文不转义。"""
-        from office_agent.cli_runner import merge_template
+        from office_agent.office.runner import merge_template
 
         merge_template("/t.docx", "/o.docx", {"org": "公安局"})
         call = find_call(fake_runner, "merge")
@@ -288,8 +288,8 @@ class TestMergeTemplate:
 class TestErrorPropagation:
     def test_runner_error_raised(self, tmp_path):
         """FakeRunner 模拟失败时，DocTool 方法应抛 OfficeCLIError。"""
-        from office_agent import cli_runner
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office import runner as cli_runner
+        from office_agent.office.runner import OfficeCLIError
 
         class FailingRunner:
             def run(self, args, **kwargs):

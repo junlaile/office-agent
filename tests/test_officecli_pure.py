@@ -1,4 +1,4 @@
-"""officecli 封装的纯函数测试：staticmethod + 列字母/ref 工具。
+﻿"""officecli 封装的纯函数测试：staticmethod + 列字母/ref 工具。
 
 这些是 DocTool/ExcelTool 的辅助方法，纯函数无外部依赖。
 真实 subprocess 调用的测试见 test_officecli_argv.py（用 FakeRunner）。
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from office_agent.doc_tool import DocTool
-from office_agent.excel_tool import _col_to_letter, _ref_at
+from office_agent.office.doc import DocTool
+from office_agent.office.excel import _col_to_letter, _ref_at
 
 
 # ============================================================

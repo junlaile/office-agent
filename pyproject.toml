@@ -11,7 +11,14 @@ dependencies = [
     "python-dotenv>=1.2.2",
 ]
 
-# src 布局：把 src/ 加入导入路径，main.py 用 from office_agent... 即可
+[project.scripts]
+office-agent = "office_agent.cli.main:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+# src 布局
 [tool.setuptools]
 package-dir = {"" = "src"}
 
@@ -66,7 +73,7 @@ markers = [
 
 [tool.coverage.run]
 source = ["office_agent"]
-omit = ["*/tests/*", "*/scripts/*"]
+omit = ["*/tests/*", "*/scripts/*", "*/__main__.py"]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -86,7 +93,6 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # 允许：与现有代码风格一致的例外
 ignore = [
     "E501",   # 行长由 format 管，lint 不重复报
-    "E402",   # 模块级 import 不在文件顶（main.py 的 sys.path hack 后续 import）
     "E741",   # 模糊变量名 l（cli_ui 里的单字符循环变量）
     "B008",   # 函数默认值用 Field()（pydantic 惯例）
     "B007",   # 循环变量未用（如 _stream 里的 node，保留语义）

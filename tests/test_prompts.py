@@ -1,4 +1,4 @@
-"""prompts.py 单元测试：build_system_prompt 分支选择。
+﻿"""prompts.py 单元测试：build_system_prompt 分支选择。
 
 纯函数（依赖 templates.is_upward），不碰外部。
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from office_agent.prompts import build_system_prompt
+from office_agent.agent.prompts import build_system_prompt
 
 
 class TestBuildSystemPromptNormal:
@@ -136,3 +136,25 @@ class TestBuildSystemPromptOfficial:
         official = build_system_prompt("output/x.docx", doc_type="通知")
         assert normal != official
         assert len(official) > len(normal)
+
+
+class TestApprovedOutline:
+    def test_injected_when_nonempty(self):
+        outline = "# 周报\n## 进展\n- 完成 A"
+        p = build_system_prompt("output/x.docx", approved_outline=outline)
+        assert "【已批准的文档大纲】（必须遵守）" in p
+        assert outline in p
+        assert "不得擅自增删大章节" in p
+
+    def test_empty_not_injected(self):
+        p = build_system_prompt("output/x.docx", approved_outline="  ")
+        assert "【已批准的文档大纲】（必须遵守）" not in p
+        assert "不得擅自增删大章节" not in p
+
+    def test_injected_in_official_mode(self):
+        outline = "# 通知\n## 正文\n- 防汛"
+        p = build_system_prompt(
+            "output/x.docx", doc_type="通知", approved_outline=outline
+        )
+        assert outline in p
+        assert "【已批准的文档大纲】（必须遵守）" in p

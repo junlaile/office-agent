@@ -1,4 +1,4 @@
-"""vehicle_data.py 单元测试：mock 查询确定性 + 脱敏。
+﻿"""vehicle_data.py 单元测试：mock 查询确定性 + 脱敏。
 
 全部纯函数，确定性输出（车牌做 MD5 种子）。
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from office_agent.vehicle_data import (
+from office_agent.domain.vehicle_data import (
     _mask_id_card,
     _mask_phone,
     _seed_rng,

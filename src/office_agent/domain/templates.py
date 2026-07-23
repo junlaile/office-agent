@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import settings
+from office_agent.config import settings
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from .cli_runner import OfficeCLIError, get_runner
+from .runner import OfficeCLIError, get_runner
 
 logger = logging.getLogger(__name__)
 

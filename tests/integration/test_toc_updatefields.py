@@ -1,4 +1,4 @@
-"""目录（TOC）与 updateFields 集成测试（真调 officecli.exe）。
+﻿"""目录（TOC）与 updateFields 集成测试（真调 officecli.exe）。
 
 标记 @pytest.mark.integration，默认 skip。
 显式运行：``uv run pytest -m integration -k toc``
@@ -16,7 +16,7 @@ import zipfile
 
 import pytest
 
-from office_agent.doc_tool import DocTool
+from office_agent.office.doc import DocTool
 
 pytestmark = pytest.mark.integration
 

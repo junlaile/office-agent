@@ -17,12 +17,11 @@ import threading
 from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from queue import Empty, Queue
-from typing import Deque
 
 
-class InputKind(str, Enum):
+class InputKind(StrEnum):
     CONTINUE = "continue"
     FORCE = "force"
     SUPPLEMENT = "supplement"
@@ -80,7 +79,7 @@ class UserInputBridge:
 
     def __init__(self) -> None:
         self._raw: Queue[str | None] = Queue()  # None = EOF
-        self._soft: Deque[str] = deque()
+        self._soft: deque[str] = deque()
         self._force_text: str | None = None
         self._force_event = threading.Event()
         self._continue_pending = False
@@ -127,9 +126,9 @@ class UserInputBridge:
                 line = self._raw.get(timeout=0.1)
             except Empty:
                 if self._eof:
-                    raise EOFError
+                    raise EOFError from None
                 if self._stop.is_set():
-                    raise EOFError
+                    raise EOFError from None
                 continue
             if line is None:
                 self._eof = True

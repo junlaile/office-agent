@@ -12,9 +12,10 @@
 [文档类型推断]（关键词 → .docx/.xlsx/.pptx，拿不准问用户）
    ↓
 [agent 节点] ←──────┐
-  DeepSeek + bind_tools(45 个工具)
+  DeepSeek + bind_tools(49 个工具)
   系统提示词按文档类型走对应分支（Word/Excel/PPTX）
   自主决定调哪个工具
+  节点边界注入忙时用户补充 / 强制打断
    ↓
 [tools 节点] ──→ 执行(officecli subprocess / interrupt / finish)
   _tool() 工厂按扩展名路由到 DocTool/ExcelTool/PptxTool
@@ -27,6 +28,7 @@
 - **LangGraph** 编排 ReAct 循环 + 原生 human-in-the-loop（`interrupt` / `Command(resume=...)`）
 - **DeepSeek** 通过 OpenAI 兼容 `tools` 接口做工具调用（`bind_tools`，不强制 `tool_choice`）
 - **OfficeCLI**（iOfficeAI）负责 docx/xlsx/pptx 实际读写，每个操作暴露为一个 `@tool`
+- **UserInputBridge** 单一 stdin 读线程：忙时可补充 / 强制打断，空闲时供 `ask_user` 使用
 
 ## 工具集（49 个）
 
@@ -123,14 +125,36 @@ cp .env.example .env
 ### 4. 运行
 
 ```bash
+uv run office-agent
+# 或：
+uv run python -m office_agent
+# 兼容 shim：
 python main.py
-# 或直接带需求：
-python main.py "写一份项目周报，包含本周进展、风险、下周计划"
-python main.py "做一份季度销售数据的 Excel 表格，含图表"
-python main.py "做一个 10 页的产品介绍 PPT"
+
+# 直接带需求：
+uv run office-agent "写一份项目周报，包含本周进展、风险、下周计划"
+uv run office-agent "做一份季度销售数据的 Excel 表格，含图表"
+uv run office-agent "做一个 10 页的产品介绍 PPT"
 ```
 
-启动时会按需求关键词推断文档类型（excel/ppt/word 关键词命中数最高的胜出；无明确线索时交互问一句）。终端会彩色展示 agent 每一步的工具调用（`🔧`）和结果（`↳`）；遇到歧义会暂停问你（`❓`）。生成的文档落在 `output/` 目录。
+启动时会按需求关键词推断文档类型（excel/ppt/word 关键词命中数最高的胜出；无明确线索时交互问一句）。**Word（含法定公文）** 会先生成结构化 Markdown 大纲预览，你可批准、提修改意见循环修订，或取消；**批准后才**创建/合并模板并开始写 `.docx`。Excel / PPT 无此门控。终端会彩色展示 agent 每一步的工具调用（`🔧`）和结果（`↳`）；遇到歧义会暂停问你（`❓`）。生成的文档落在 `output/` 目录。
+
+**Word 大纲预览**（写文件前）：
+
+| 选项 | 含义 |
+|---|---|
+| `1` / 批准 | 按该大纲生成 Word |
+| `2` / 修改 | 输入修改意见后重新生成大纲 |
+| `3` / 取消 | 不写文件，结束本次运行 |
+
+**忙时输入**（agent 正在跑时也可键入）：
+
+| 输入 | 含义 |
+|---|---|
+| 普通文字 | 软补充，下一轮注入给 agent |
+| `!内容` / `强制:内容` | 强制打断，节点边界注入 |
+| `继续` | 继续当前任务（不重新 create_doc） |
+| `退出` | 结束本次运行 |
 
 ## 配置项
 
@@ -146,29 +170,30 @@ python main.py "做一个 10 页的产品介绍 PPT"
 
 ```
 office-agent/
-├── main.py                      # 终端入口（run() 编排 + _stream）
+├── main.py                      # 兼容 shim → office_agent.cli.main
 ├── scripts/
 │   ├── fetch_officecli.py       # 跨平台下载 officecli
 │   └── gen_official_templates.py # 生成 15 文种公文模板（GB/T 9704）
 ├── src/office_agent/
 │   ├── config.py                # 配置加载（env > .env > pyproject）
-│   ├── llm.py                   # ChatOpenAI 工厂
-│   ├── cli_runner.py            # officecli subprocess 执行器 + OfficeCLIError + merge_template
-│   ├── doc_tool.py              # Word 文档操作（DocTool）
-│   ├── excel_tool.py            # Excel 工作簿操作（ExcelTool）
-│   ├── pptx_tool.py             # PowerPoint 演示文稿操作（PptxTool）
-│   ├── officecli.py             # 向后兼容门面（re-export 上述 4 模块）
-│   ├── tools/                   # @tool 工具集包
-│   │   ├── __init__.py          # 会话基础设施 + ALL_TOOLS/TOOL_BY_NAME 聚合
-│   │   ├── common.py            # 通用工具 + 控制（ask_user/finish）+ 公文（start_from_template）
-│   │   ├── doc.py               # Word 专属工具（含 update_paragraph/replace_text/remove_paragraph）
-│   │   ├── excel.py             # Excel 专属工具
-│   │   └── pptx.py              # PowerPoint 专属工具
-│   ├── templates.py             # 15 文种元数据 + 文种识别 + merge 数据
-│   ├── prompts.py               # 系统提示词（Word/Excel/PPT/公文 4 分支）
-│   ├── cli_ui.py                # 终端 UI 辅助（从 main.py 下沉）
-│   ├── state.py                 # 极简 state（messages + doc_path + done）
-│   └── graph.py                 # ReAct agent 图装配
+│   ├── officecli.py             # 向后兼容门面（re-export office.*）
+│   ├── agent/                   # LangGraph 核心
+│   │   ├── graph.py / state.py / prompts.py / llm.py
+│   │   └── outline.py           # Word 预览大纲生成（批准前）
+│   ├── cli/                     # 终端入口与交互
+│   │   ├── main.py              # run() 编排 + UserInputBridge 生命周期
+│   │   ├── ui.py                # 终端 UI / interrupt 表单
+│   │   └── user_input.py        # 忙时输入桥（补充/强制/继续/退出）
+│   ├── office/                  # OfficeCLI 实现层
+│   │   ├── runner.py            # subprocess 执行器 + merge_template
+│   │   ├── doc.py / excel.py / pptx.py   # DocTool / ExcelTool / PptxTool
+│   ├── domain/                  # 业务域
+│   │   ├── templates.py         # 15 文种元数据 + 文种识别
+│   │   ├── format.py            # Office 格式推断（docx/xlsx/pptx）
+│   │   └── vehicle_data.py      # 车辆查询 mock
+│   └── tools/                   # @tool 工具集包
+│       ├── __init__.py          # 会话基础设施 + ALL_TOOLS 聚合
+│       ├── common.py / doc.py / excel.py / pptx.py
 ├── template/word/               # 15 文种公文模板（GB/T 9704）
 ├── tests/                       # 测试套件（pytest）
 │   ├── conftest.py              # FakeRunner + session fixture
@@ -182,14 +207,16 @@ office-agent/
 ## 设计要点
 
 - **DeepSeek tool_calls**：`llm.bind_tools(tools)`；不强制 `tool_choice`，不用 `response_format`（thinking 模式冲突）。
+- **Word 大纲预览门控**：写 `.docx` 前用无工具 LLM 生成 Markdown 大纲；用户批准后才 `_prepare_official_doc` / `create_doc`。
 - **手写 tools 节点**：比内置 `ToolNode` 灵活，能处理 `ask_user` 的 `interrupt` 挂起和 `finish` 的短路完成。
-- **会话级 doc_path 注入**：main.py 启动时按需求推断文档类型和输出路径，所有工具共享，LLM 不需传路径参数。
+- **会话级 doc_path 注入**：启动时按需求推断文档类型和输出路径，所有工具共享，LLM 不需传路径参数。
 - **扩展名路由**：`tools._tool()` 工厂按 `.docx/.xlsx/.pptx` 后缀返回对应 Tool 类；通用工具跨格式，专属工具在其他格式下给出明确引导。
 - **公文模式**：识别 15 法定文种 → 从 GB/T 9704 模板创建 → LLM 用 update_paragraph/replace_text/remove_paragraph 编辑正文（保字体）。
+- **忙时输入桥**：单一 stdin 读线程；忙时分类投递，空闲时 `blocking_readline` 供 ask_user，避免抢 stdin。
 - **finish 显式结束**：比"无 tool_calls 即结束"更可靠。
 - **中文 UTF-8**：subprocess 强制 `encoding='utf-8'`，JSON 通过 `--commands` argv 传递。
 - **显式格式 props**：默认 docx 缺 Heading/Title 样式，用 `size`/`bold` 等显式 props 确保格式生效。
-- **门面模式保兼容**：`officecli.py` 拆分后保留为 re-export 门面，`from office_agent.officecli import X` 零改动。
+- **门面模式保兼容**：`officecli.py` 保留为 re-export 门面，`from office_agent.officecli import X` 零改动。
 
 ## 开发
 
@@ -213,7 +240,7 @@ uv run pytest --cov-report=html  # 生成 htmlcov/
 ```
 
 测试分层（详见 `tests/`）：
-- **单元测试**（默认跑，~310 用例）：纯函数 + FakeRunner mock，覆盖 templates/prompts/vehicle/cli_ui/officecli/tools/graph。覆盖率门槛 65%。
+- **单元测试**（默认跑）：纯函数 + FakeRunner mock，覆盖 domain/cli/office/tools/agent。覆盖率门槛 65%。
 - **集成测试**（`@pytest.mark.integration` 默认 skip）：真调 officecli.exe，验证 create/add/view/merge/validate 端到端。
 - **LLM 端到端**（`@pytest.mark.llm` 默认 skip）：真跑 agent 生成公文，验证完整链路。
 
@@ -227,8 +254,8 @@ uv run mypy src/            # 类型检查
 
 ### 扩展
 
-- 如需更多 officecli 能力（条件格式、数据透视表、幻灯片切换动画、SmartArt 等），在 `doc_tool.py`/`excel_tool.py`/`pptx_tool.py` 对应类加方法 + `tools/doc.py`/`excel.py`/`pptx.py` 加 `@tool`。命令面参考 `officecli help <format> <element>`。
-- 接 Web UI：`main.py` 的 interrupt/resume 循环可替换为 WebSocket / HTTP 端点。
+- 如需更多 officecli 能力（条件格式、数据透视表、幻灯片切换动画、SmartArt 等），在 `office/doc.py` / `excel.py` / `pptx.py` 对应类加方法 + `tools/doc.py` / `excel.py` / `pptx.py` 加 `@tool`。命令面参考 `officecli help <format> <element>`。
+- 接 Web UI：`cli/main.py` 的 interrupt/resume 循环可替换为 WebSocket / HTTP 端点。
 
 ## 许可
 

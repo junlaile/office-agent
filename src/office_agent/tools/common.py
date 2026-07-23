@@ -11,16 +11,16 @@ from langchain_core.tools import tool
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
-from office_agent.officecli import (
-    OfficeCLIError,
-    PptxTool,
-    merge_template,
-)
-from office_agent.templates import (
+from office_agent.domain.templates import (
     DOC_TYPE_NAMES,
     default_merge_data,
     template_exists,
     template_path,
+)
+from office_agent.officecli import (
+    OfficeCLIError,
+    PptxTool,
+    merge_template,
 )
 from office_agent.tools import (
     _tool,
@@ -377,7 +377,7 @@ def query_vehicle(plate_number: str) -> dict:
     参数:
         plate_number: 车牌号（如 "京A12345"）。
     """
-    from office_agent.vehicle_data import query
+    from office_agent.domain.vehicle_data import query
 
     return query(plate_number)
 

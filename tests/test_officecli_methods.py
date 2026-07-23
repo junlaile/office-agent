@@ -1,4 +1,4 @@
-"""DocTool/ExcelTool/PptxTool 更多方法的 argv 测试（扩充覆盖率）。
+﻿"""DocTool/ExcelTool/PptxTool 更多方法的 argv 测试（扩充覆盖率）。
 
 补充 test_officecli_argv.py 未覆盖的方法，用 FakeRunner 断言 argv。
 """
@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from office_agent.doc_tool import DocTool
-from office_agent.excel_tool import ExcelTool
-from office_agent.pptx_tool import PptxTool
+from office_agent.office.doc import DocTool
+from office_agent.office.excel import ExcelTool
+from office_agent.office.pptx import PptxTool
 
 
 def joined_args(call):
@@ -83,7 +83,7 @@ class TestDocToolMore:
         assert any("title=T" in joined_args(c) for c in set_calls)
 
     def test_set_doc_properties_no_args_raises(self, fake_runner, tmp_path):
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         tool = DocTool(str(tmp_path / "t.docx"))
         with pytest.raises(OfficeCLIError):
@@ -287,14 +287,14 @@ class TestPptxToolMore:
         assert any("title=T" in joined_args(c) for c in set_calls)
 
     def test_set_presentation_props_no_args_raises(self, fake_runner, tmp_path):
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         tool = PptxTool(str(tmp_path / "t.pptx"))
         with pytest.raises(OfficeCLIError):
             tool.set_presentation_props()
 
     def test_set_theme_colors_no_args_raises(self, fake_runner, tmp_path):
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         tool = PptxTool(str(tmp_path / "t.pptx"))
         with pytest.raises(OfficeCLIError):
@@ -316,19 +316,19 @@ class TestPptxToolMore:
 # ============================================================
 class TestCliRunner:
     def test_raw_whitelisted(self, fake_runner):
-        from office_agent.cli_runner import raw
+        from office_agent.office.runner import raw
 
         raw(["view", "t.docx", "text"])
         assert fake_runner.calls
 
     def test_raw_non_whitelisted_raises(self, fake_runner):
-        from office_agent.cli_runner import OfficeCLIError, raw
+        from office_agent.office.runner import OfficeCLIError, raw
 
         with pytest.raises(OfficeCLIError):
             raw(["dangerous", "cmd"])
 
     def test_raw_empty_raises(self, fake_runner):
-        from office_agent.cli_runner import OfficeCLIError, raw
+        from office_agent.office.runner import OfficeCLIError, raw
 
         with pytest.raises(OfficeCLIError):
             raw([])

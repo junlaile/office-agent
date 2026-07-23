@@ -1,4 +1,4 @@
-"""公文模式编排测试：_prepare_official_doc 编排逻辑（mock merge_template）。
+﻿"""公文模式编排测试：_prepare_official_doc 编排逻辑（mock merge_template）。
 
 验证 main 流程里的公文预创建：识别 → merge → 预读模板正文 → 打印 → 返回
 (文种名, 模板正文)。不真调 officecli.exe。
@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from office_agent import cli_ui
-from office_agent.cli_ui import _prepare_official_doc
+from office_agent.cli import ui as cli_ui
+from office_agent.cli.ui import _prepare_official_doc
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ class TestPrepareOfficialDoc:
 
     def test_merge_failure_returns_none(self, monkeypatch, tmp_path, stub_doctool_viewtext):
         """merge 失败时返回 (None, '')（不抛）。"""
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         def failing_merge(*a, **k):
             raise OfficeCLIError("merge 失败")
@@ -78,7 +78,7 @@ class TestPrepareOfficialDoc:
 
     def test_viewtext_failure_returns_empty_text(self, monkeypatch, tmp_path, stub_doctool_viewtext):
         """view_text 预读失败时不阻断：文种名照常返回，正文退化为空串。"""
-        from office_agent.cli_runner import OfficeCLIError
+        from office_agent.office.runner import OfficeCLIError
 
         class _BoomDocTool:
             def __init__(self, doc_path):

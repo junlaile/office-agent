@@ -26,16 +26,22 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 
-from .config import settings
+from office_agent.cli.user_input import (
+    PREFIX_FORCE,
+    PREFIX_SUPPLEMENT,
+    get_bridge,
+)
+from office_agent.config import settings
+from office_agent.tools import ALL_TOOLS, TOOL_BY_NAME
+
 from .llm import get_llm
 from .prompts import build_system_prompt
 from .state import AgentState
-from .tools import ALL_TOOLS, TOOL_BY_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -90,27 +96,45 @@ def _agent_node_factory(
     doc_type: str | None = None,
     *,
     template_text: str = "",
+    approved_outline: str = "",
 ):
     """构造 agent 节点。doc_path 用于系统提示词，doc_type 触发公文模式分支。
 
     template_text：公文模式下已读取的模板正文（view_text 输出），注入系统
     提示词让 LLM 第一轮即看到段落结构，无需自调 view_text。
+    approved_outline：用户已批准的 Markdown 大纲。
     """
 
     llm_with_tools = get_llm().bind_tools(ALL_TOOLS)
     system_msg = SystemMessage(
-        content=build_system_prompt(doc_path, doc_type, template_text=template_text)
+        content=build_system_prompt(
+            doc_path,
+            doc_type,
+            template_text=template_text,
+            approved_outline=approved_outline,
+        )
     )
 
     def agent_node(state: AgentState) -> dict[str, Any]:
-        messages = state.get("messages", [])
+        messages = list(state.get("messages", []))
+
+        # 节点边界：注入忙时用户补充 / 强制打断（CLI 主循环之外的第二道保险）
+        injected: list[HumanMessage] = []
+        bridge = get_bridge()
+        if bridge is not None:
+            force = bridge.consume_force()
+            if force:
+                injected.append(HumanMessage(content=f"{PREFIX_FORCE}{force}"))
+            for text in bridge.drain_soft():
+                injected.append(HumanMessage(content=f"{PREFIX_SUPPLEMENT}{text}"))
+
         limit = settings.recursion_limit
         # 用 messages 数估算已用步数：每轮 agent+tools 约加 2 条消息。
         # 粗略但足够触发软收尾。
-        used = len(messages)
+        used = len(messages) + len(injected)
         soft_threshold = int(limit * SOFT_FINISH_RATIO)
 
-        prompt_messages: list = [system_msg, *messages]
+        prompt_messages: list = [system_msg, *messages, *injected]
         # 软收尾提醒：接近预算时催促 finish
         if used >= soft_threshold:
             remaining = max(0, limit - used)
@@ -125,7 +149,8 @@ def _agent_node_factory(
             prompt_messages.append(reminder)
 
         ai_msg = llm_with_tools.invoke(prompt_messages)
-        return {"messages": [ai_msg]}
+        # 把注入的 HumanMessage 也写回 state，保证 checkpoint / 后续轮次可见
+        return {"messages": [*injected, ai_msg]}
 
     return agent_node
 
@@ -261,6 +286,7 @@ def build_graph(
     doc_type: str | None = None,
     *,
     template_text: str = "",
+    approved_outline: str = "",
 ):
     """构建并编译 ReAct agent 图。
 
@@ -270,11 +296,18 @@ def build_graph(
         None 表示普通模式（Word/Excel/PowerPoint 自由生成）。
     template_text: 公文模式下已读取的模板正文（view_text 输出，带路径标注），
         注入提示词让 LLM 照路径编辑，避免跳过读模板直接瞎改。
+    approved_outline: 用户已批准的 Markdown 大纲，注入系统提示词。
     """
     builder = StateGraph(AgentState)
 
     builder.add_node(
-        "agent", _agent_node_factory(doc_path, doc_type, template_text=template_text)
+        "agent",
+        _agent_node_factory(
+            doc_path,
+            doc_type,
+            template_text=template_text,
+            approved_outline=approved_outline,
+        ),
     )
     builder.add_node("tools", _tools_node)
     builder.add_node("nudge", _nudge_node)

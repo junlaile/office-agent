@@ -1,4 +1,4 @@
-"""cli_ui.py 单元测试：从 main.py 下沉的纯函数 + UI 函数。
+﻿"""cli_ui.py 单元测试：从 main.py 下沉的纯函数 + UI 函数。
 
 纯函数（_infer_doc_kind / _format_tool_call / _indent / _derive_doc_path）
 直接测；UI 函数（_banner / _print_* / _collect_*）用 capsys/monkeypatch。
@@ -11,15 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from office_agent import cli_ui
-from office_agent.cli_ui import (
-    _DOCX_KEYWORDS,
-    _PPTX_KEYWORDS,
-    _XLSX_KEYWORDS,
+from office_agent.cli import ui as cli_ui
+from office_agent.cli.ui import (
     _derive_doc_path,
     _format_tool_call,
     _indent,
     _infer_doc_kind,
+)
+from office_agent.domain.format import (
+    _DOCX_KEYWORDS,
+    _PPTX_KEYWORDS,
+    _XLSX_KEYWORDS,
 )
 
 
@@ -235,3 +237,55 @@ class TestDeriveDocPath:
         name = Path(p).name
         for ch in '/\\:*?"<>|':
             assert ch not in name
+
+
+# ============================================================
+# 大纲预览决策
+# ============================================================
+class TestOutlineDecision:
+    def test_approve(self, monkeypatch):
+        from office_agent.cli import ui
+
+        monkeypatch.setattr(ui, "_readline", lambda prompt="": "1")
+        action, fb = ui._collect_outline_decision()
+        assert action == "approve"
+        assert fb == ""
+
+    def test_revise_with_feedback(self, monkeypatch):
+        from office_agent.cli import ui
+
+        answers = iter(["2", "加上风险一节"])
+        monkeypatch.setattr(ui, "_readline", lambda prompt="": next(answers))
+        action, fb = ui._collect_outline_decision()
+        assert action == "revise"
+        assert "风险" in fb
+
+    def test_cancel(self, monkeypatch):
+        from office_agent.cli import ui
+
+        monkeypatch.setattr(ui, "_readline", lambda prompt="": "取消")
+        action, fb = ui._collect_outline_decision()
+        assert action == "cancel"
+
+    def test_approval_loop_approve(self, monkeypatch, capsys):
+        from office_agent.cli import ui
+
+        monkeypatch.setattr(
+            "office_agent.agent.outline.generate_outline",
+            lambda *a, **k: "# 大纲\n## A\n- 1",
+        )
+        monkeypatch.setattr(ui, "_readline", lambda prompt="": "1")
+        result = ui._run_outline_approval_loop("写周报")
+        assert result is not None
+        assert "# 大纲" in result
+        assert "已批准" in capsys.readouterr().out
+
+    def test_approval_loop_cancel(self, monkeypatch):
+        from office_agent.cli import ui
+
+        monkeypatch.setattr(
+            "office_agent.agent.outline.generate_outline",
+            lambda *a, **k: "# X",
+        )
+        monkeypatch.setattr(ui, "_readline", lambda prompt="": "3")
+        assert ui._run_outline_approval_loop("写周报") is None
