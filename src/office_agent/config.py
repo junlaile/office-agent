@@ -53,7 +53,6 @@ class Settings:
     output_dir: Path
 
     # Agent
-    max_iterations: int
     recursion_limit: int  # LangGraph 超级步上限（agent↔tools 往返算 2 步）
 
     # 日志
@@ -70,13 +69,32 @@ def _load() -> Settings:
     pyconfig = _load_pyconfig()
 
     def env(key: str, default: str = "") -> str:
-        # 优先级：环境变量 > pyproject.toml > default
+        # 优先级：环境变量 > pyproject.toml > default。
+        # 显式设成空串的环境变量也算"已设置"（可用于清空某项配置）。
         val = os.environ.get(key)
-        if val:
+        if val is not None:
             return val
         return pyconfig.get(key, default)
 
-    output_dir_raw = env("OUTPUT_DIR", "./output")
+    def int_env(key: str, default: int) -> int:
+        raw = env(key, str(default)).strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            raise SystemExit(f"配置 {key} 的值不是整数: {raw!r}（检查环境变量 / .env / pyproject.toml）") from None
+
+    def float_env(key: str, default: float) -> float:
+        raw = env(key, str(default)).strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            raise SystemExit(f"配置 {key} 的值不是数字: {raw!r}（检查环境变量 / .env / pyproject.toml）") from None
+
+    output_dir_raw = env("OUTPUT_DIR", "./output") or "./output"
     output_dir = Path(output_dir_raw)
     if not output_dir.is_absolute():
         output_dir = (_PROJECT_ROOT / output_dir).resolve()
@@ -85,13 +103,12 @@ def _load() -> Settings:
         llm_base_url=env("LLM_BASE_URL", "https://api.deepseek.com"),
         llm_api_key=env("LLM_API_KEY", ""),
         llm_model=env("LLM_MODEL", "deepseek-v4-flash"),
-        llm_request_timeout=int(env("LLM_REQUEST_TIMEOUT", "120") or 120),
-        llm_temperature=float(env("LLM_TEMPERATURE", "0.5") or 0.5),
+        llm_request_timeout=int_env("LLM_REQUEST_TIMEOUT", 120),
+        llm_temperature=float_env("LLM_TEMPERATURE", 0.5),
         officecli_bin=env("OFFICECLI_BIN", ""),
-        officecli_timeout=int(env("OFFICECLI_TIMEOUT", "120") or 120),
+        officecli_timeout=int_env("OFFICECLI_TIMEOUT", 120),
         output_dir=output_dir,
-        max_iterations=int(env("MAX_ITERATIONS", "2") or 2),
-        recursion_limit=int(env("RECURSION_LIMIT", "100") or 100),
+        recursion_limit=int_env("RECURSION_LIMIT", 100),
         log_level=env("LOG_LEVEL", "INFO"),
     )
 
@@ -104,7 +121,8 @@ def setup_logging() -> None:
     """按 settings.log_level 配置 root logger。
 
     幂等：重复调用不会叠加 handler（basicConfig 已自带此保证）。
-    任何 `import office_agent.*` 都会经过本模块，因此自动配好日志。
+    由 CLI 入口（cli.main.run）显式调用——不在 import 时自动执行，
+    避免"import 本包就改掉宿主进程的全局日志配置"这种副作用。
     """
     level_name = settings.log_level.strip().upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -113,10 +131,6 @@ def setup_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-
-
-# 模块加载即配好日志，使用方零配置
-setup_logging()
 
 
 def assert_llm_ready() -> None:
