@@ -9,8 +9,6 @@ from __future__ import annotations
 import io
 from urllib.error import HTTPError, URLError
 
-import pytest
-
 from office_agent.tools.common import _validate_image_source
 
 
@@ -119,6 +117,27 @@ class TestValidateHttp:
         _patch_urlopen(monkeypatch, err)
         assert _validate_image_source("https://example.com/x.png") is None
 
+    def test_http_403_via_http_error_passes(self, monkeypatch):
+        # 403 常见于图片 CDN 拒绝 HEAD/无 Referer 探测，但实际 GET 能取
+        # → 放行交给 officecli（宁可放行，不可误拦）
+        err = HTTPError("url", 403, "Forbidden", {}, io.BytesIO(b""))
+        _patch_urlopen(monkeypatch, err)
+        assert _validate_image_source("https://example.com/x.png") is None
+
+    def test_head_probe_sends_user_agent(self, monkeypatch):
+        # 无 UA 的探测请求常被 CDN 直接 403 → 必须带常规 UA
+        captured = {}
+
+        from office_agent.tools import common
+
+        def fake_urlopen(req, timeout=None):  # noqa: ARG001
+            captured["ua"] = req.get_header("User-agent")
+            return _FakeResponse(200)
+
+        monkeypatch.setattr(common, "urlopen", fake_urlopen)
+        assert _validate_image_source("https://example.com/a.png") is None
+        assert captured["ua"] and "Mozilla" in captured["ua"]
+
     def test_connection_error_blocked(self, monkeypatch):
         # DNS 失败/拒绝连接/超时 → 拦
         err = URLError("connection refused")
@@ -128,9 +147,8 @@ class TestValidateHttp:
         assert "不可访问" in reason
 
     def test_timeout_blocked(self, monkeypatch):
-        import socket
 
-        err = URLError(socket.timeout("timed out"))
+        err = URLError(TimeoutError("timed out"))
         _patch_urlopen(monkeypatch, err)
         reason = _validate_image_source("https://slow-host.invalid/a.png")
         assert reason is not None

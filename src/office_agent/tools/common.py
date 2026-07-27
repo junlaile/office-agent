@@ -22,7 +22,7 @@ from office_agent.officecli import (
     PptxTool,
     merge_template,
 )
-from office_agent.tools import (
+from office_agent.tools.session import (
     _tool,
     session_doc_kind,
     session_doc_path,
@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 # 图片来源预校验超时（秒）。仅用于 HEAD 探测 URL 是否可达，不影响 officecli 实际下载。
 _IMAGE_HEAD_TIMEOUT = 8
+# HEAD 探测用的 User-Agent（无 UA 的探测请求常被图片 CDN 直接 403 误拦）
+_IMAGE_PROBE_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 
 def _validate_image_source(src: str) -> str | None:
@@ -61,21 +66,24 @@ def _validate_image_source(src: str) -> str | None:
     # HTTP/HTTPS：HEAD 探测可达性
     if s.startswith(("http://", "https://")):
         try:
-            req = Request(s, method="HEAD")
+            # 带常规浏览器 UA：不少图片 CDN 对无 UA 请求直接 403，
+            # 会把好图误判成坏源（违反"宁可放行"原则）。
+            req = Request(s, method="HEAD", headers={"User-Agent": _IMAGE_PROBE_UA})
             with urlopen(req, timeout=_IMAGE_HEAD_TIMEOUT) as resp:
                 code = getattr(resp, "status", None) or resp.getcode()
                 # 明确的"不存在"类状态码 → 拦
                 if code in (404, 410):
                     return f"图片不存在（HTTP {code}）"
-                # 其它（2xx/3xx/405/...）→ 放行
+                # 其它（2xx/3xx/403/405/...）→ 放行
                 return None
         except URLError as e:
             # HTTPError（4xx/5xx 有响应）也是 URLError 子类
             code = getattr(e, "code", None)
             if code in (404, 410):
                 return f"图片不存在（HTTP {code}）"
-            if code in (405,) or "Method Not Allowed" in str(e):
-                # HEAD 不被支持 → 放行，让 officecli 实际 GET
+            if code in (403, 405) or "Method Not Allowed" in str(e):
+                # 403: 部分服务器拒绝 HEAD/无 Referer 探测但 GET 能取；
+                # 405: HEAD 不被支持。都放行，让 officecli 实际 GET 兜底。
                 return None
             # 连接失败 / DNS 失败 / 超时 / 拒绝 → 拦
             return f"图片不可访问（{e.reason}）"
@@ -145,7 +153,7 @@ def add_table(data: list[list], has_header: bool = True) -> str:
         if kind == "pptx":
             # PptxTool.add_table 需要 slide_index，加到最新幻灯片
             pptx: PptxTool = t  # type: ignore[assignment]
-            slide_index = pptx._last_slide_index() or 1
+            slide_index = pptx.last_slide_index() or 1
             pptx.add_table(slide_index, clean, has_header=has_header)
         else:
             t.add_table(clean, has_header=has_header)  # type: ignore[attr-defined]
@@ -309,7 +317,7 @@ def add_image(url_or_path: str, width: str = "8cm", caption: str = "") -> str:
         t = _tool()
         if kind == "pptx":
             pptx: PptxTool = t  # type: ignore[assignment]
-            slide_index = pptx._last_slide_index() or 1
+            slide_index = pptx.last_slide_index() or 1
             return pptx.add_image(slide_index, url_or_path, width=width, alt=caption or "图片")
         # docx
         return t.add_image(
