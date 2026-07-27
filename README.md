@@ -256,8 +256,10 @@ uv run mypy src/            # 类型检查
 
 ### 扩展
 
-- 如需更多 officecli 能力（条件格式、数据透视表、幻灯片切换动画、SmartArt 等），在 `office/doc.py` / `excel.py` / `pptx.py` 对应类加方法 + `tools/doc.py` / `excel.py` / `pptx.py` 加 `@tool`。命令面参考 `officecli help <format> <element>`。
-- 接 Web UI：`cli/main.py` 的 interrupt/resume 循环可替换为 WebSocket / HTTP 端点。
+- 新增普通工具：在 `office/doc.py` / `excel.py` / `pptx.py` 加底层方法，在对应 `tools/*.py` 加 `@tool`，再向 `tools/__init__.py` 的 `TOOL_SPECS` 注册 `document_kinds`、`side_effect` 和批处理策略。
+- 新增交互工具：工具函数只返回 `{title, description, fields}` 请求，在 `ToolSpec` 中设 `execution_mode=INTERACTION, can_batch=False`；Graph 会自动独占调用并负责 interrupt/resume。
+- 新增需确认的副作用工具：工具函数实现确认后的实际写操作，在 `ToolSpec` 中设 `execution_mode=CONFIRMATION, can_batch=False`；Graph 会先展示参数预览，用户确认后才调用。
+- 接 Web UI：实现 `InteractionAdapter.collect()` 并把结构化 `InteractionRequest` / `InteractionResponse` 接到 WebSocket 或 HTTP，无需修改工具函数。
 
 ## 许可
 

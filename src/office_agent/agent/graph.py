@@ -197,6 +197,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
             executed[tc_id] = ToolExecutionRecord(
                 tool_call_id=tc_id,
                 tool_name=name,
+                argument_keys=sorted(str(key) for key in (tc.get("args") or {})),
                 status="cancelled",
                 result=content,
             )
@@ -227,6 +228,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
             executed[tc_id] = ToolExecutionRecord(
                 tool_call_id=tc_id,
                 tool_name=name,
+                argument_keys=sorted(str(key) for key in args),
                 status="completed",
                 result=result,
             )
@@ -241,6 +243,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
             executed[tc_id] = ToolExecutionRecord(
                 tool_call_id=tc_id,
                 tool_name=name,
+                argument_keys=sorted(str(key) for key in args),
                 status="failed",
                 result=result,
             )
@@ -263,6 +266,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
         executed[tc_id] = ToolExecutionRecord(
             tool_call_id=tc_id,
             tool_name=name,
+            argument_keys=sorted(str(key) for key in args),
             status=status,
             result=result,
         )
@@ -425,6 +429,7 @@ def _interaction_node(state: AgentState) -> dict[str, Any]:
     executed[tc_id] = ToolExecutionRecord(
         tool_call_id=tc_id,
         tool_name=name,
+        argument_keys=sorted(str(key) for key in (request.get("tool_args") or {})),
         status=status,
         result=content,
     )

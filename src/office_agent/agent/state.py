@@ -46,6 +46,8 @@ class InteractionResponse(TypedDict, total=False):
 class ToolExecutionRecord(TypedDict, total=False):
     tool_call_id: str
     tool_name: str
+    # 只记录参数名，不记录可能包含敏感信息的参数值
+    argument_keys: list[str]
     status: Literal["completed", "cancelled", "failed"]
     result: Any
 
