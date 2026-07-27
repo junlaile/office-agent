@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -102,13 +101,9 @@ def fake_runner(monkeypatch):
 # ============================================================
 @pytest.fixture(autouse=True)
 def clean_session():
-    """每个测试后清空 tools 模块的全局会话路径，防测试间污染。"""
+    """每个测试后清空会话路径，防测试间污染。"""
     yield
-    set_session_doc.__wrapped__() if hasattr(set_session_doc, "__wrapped__") else None
-    # 直接重置模块全局（set_session_doc(None) 不行，用底层）
-    from office_agent import tools as tools_module
-
-    tools_module._session_doc_path = None
+    set_session_doc(None)
 
 
 @pytest.fixture

@@ -10,7 +10,7 @@ from langchain_core.tools import tool
 from office_agent.officecli import (
     OfficeCLIError,
 )
-from office_agent.tools import (
+from office_agent.tools.session import (
     _tool,
     _wrong_kind_msg,
     session_doc_kind,

@@ -10,12 +10,12 @@ from office_agent.officecli import (
     OfficeCLIError,
     PptxTool,
 )
-from office_agent.tools import (
+from office_agent.tools.common import _validate_image_source
+from office_agent.tools.session import (
     _tool,
     _wrong_kind_msg,
     session_doc_kind,
 )
-from office_agent.tools.common import _validate_image_source
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ def add_textbox(
         return _wrong_kind_msg("add_textbox", "pptx", "docx 用 add_paragraph；xlsx 用 set_cell")
     try:
         pptx: PptxTool = _tool()  # type: ignore[assignment]
-        slide_index = pptx._last_slide_index() or 1
+        slide_index = pptx.last_slide_index() or 1
         return pptx.add_textbox(
             slide_index,
             text,
@@ -152,7 +152,7 @@ def add_slide_image(url_or_path: str, x: str = "2cm", y: str = "2cm", width: str
         )
     try:
         pptx: PptxTool = _tool()  # type: ignore[assignment]
-        slide_index = pptx._last_slide_index() or 1
+        slide_index = pptx.last_slide_index() or 1
         return pptx.add_image(slide_index, url_or_path, x=x, y=y, width=width)
     except OfficeCLIError as e:
         return f"插入图片失败: {e}"
@@ -187,7 +187,7 @@ def add_slide_table(
         if not clean:
             return "添加表格失败: 数据为空"
         pptx: PptxTool = _tool()  # type: ignore[assignment]
-        slide_index = pptx._last_slide_index() or 1
+        slide_index = pptx.last_slide_index() or 1
         return pptx.add_table(slide_index, clean, has_header=has_header, x=x, y=y, width=width)
     except OfficeCLIError as e:
         return f"添加表格失败: {e}"
