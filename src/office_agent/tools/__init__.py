@@ -153,18 +153,21 @@ from .pptx import (  # noqa: E402
 )
 
 # ============================================================
-# 工具清单（供 graph.py 绑定）
+# 工具清单（按文档类型绑定；ALL_TOOLS 保留作注册表）
 # ============================================================
-ALL_TOOLS = [
-    # 通用
+COMMON_TOOLS = [
+    # 三种格式均支持
     create_doc,
-    start_from_template,
     add_table,
     view_text,
     validate_doc,
-    add_image,
     set_doc_properties,
-    # Word 专属
+]
+
+IMAGE_TOOLS = [add_image]
+
+WORD_TOOLS = [
+    start_from_template,
     add_title,
     add_heading,
     add_paragraph,
@@ -180,7 +183,9 @@ ALL_TOOLS = [
     update_paragraph,
     replace_text,
     remove_paragraph,
-    # Excel 专属
+]
+
+EXCEL_TOOLS = [
     add_sheet,
     set_cell,
     set_cells,
@@ -198,7 +203,9 @@ ALL_TOOLS = [
     set_column_width,
     autofit_column,
     rename_sheet,
-    # PowerPoint 专属
+]
+
+PPTX_TOOLS = [
     add_slide,
     add_textbox,
     add_slide_image,
@@ -207,10 +214,43 @@ ALL_TOOLS = [
     set_slide_notes,
     set_theme_colors,
     set_theme_fonts,
-    # 业务专项 + 控制
+]
+
+CONTROL_TOOLS = [
+    # 业务专项 + 控制（三种格式均可使用）
     query_vehicle,
     ask_user,
     finish,
+]
+
+
+def tools_for_doc_path(doc_path: str) -> list:
+    """按输出文件扩展名返回应暴露给 LLM 的工具。
+
+    未知扩展名与会话路由保持一致，默认按 Word 处理。返回新列表，避免调用方
+    修改模块级工具集合。
+    """
+    path = doc_path.lower()
+    if path.endswith(".xlsx"):
+        specific = EXCEL_TOOLS
+        image_tools = []
+    elif path.endswith(".pptx"):
+        specific = PPTX_TOOLS
+        image_tools = IMAGE_TOOLS
+    else:
+        specific = WORD_TOOLS
+        image_tools = IMAGE_TOOLS
+    return [*COMMON_TOOLS, *image_tools, *specific, *CONTROL_TOOLS]
+
+
+# 全量注册表仅供工具执行节点按名称分发，以及兼容既有导入。
+ALL_TOOLS = [
+    *COMMON_TOOLS,
+    *IMAGE_TOOLS,
+    *WORD_TOOLS,
+    *EXCEL_TOOLS,
+    *PPTX_TOOLS,
+    *CONTROL_TOOLS,
 ]
 
 # 工具名 -> 工具对象，便于 tools 节点按名分发
@@ -228,6 +268,13 @@ __all__ = [
     # 聚合
     "ALL_TOOLS",
     "TOOL_BY_NAME",
+    "COMMON_TOOLS",
+    "IMAGE_TOOLS",
+    "WORD_TOOLS",
+    "EXCEL_TOOLS",
+    "PPTX_TOOLS",
+    "CONTROL_TOOLS",
+    "tools_for_doc_path",
     # 所有工具（供 from office_agent.tools import X）
     *[t.name for t in ALL_TOOLS],
 ]

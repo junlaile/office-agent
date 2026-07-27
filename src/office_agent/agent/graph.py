@@ -37,7 +37,7 @@ from office_agent.cli.user_input import (
     get_bridge,
 )
 from office_agent.config import settings
-from office_agent.tools import ALL_TOOLS, TOOL_BY_NAME
+from office_agent.tools import TOOL_BY_NAME, tools_for_doc_path
 
 from .llm import get_llm
 from .prompts import build_system_prompt
@@ -105,7 +105,7 @@ def _agent_node_factory(
     approved_outline：用户已批准的 Markdown 大纲。
     """
 
-    llm_with_tools = get_llm().bind_tools(ALL_TOOLS)
+    llm_with_tools = get_llm().bind_tools(tools_for_doc_path(doc_path))
     system_msg = SystemMessage(
         content=build_system_prompt(
             doc_path,

@@ -13,6 +13,7 @@ from office_agent.tools import (
     session_doc_kind,
     session_doc_path,
     set_session_doc,
+    tools_for_doc_path,
 )
 
 
@@ -179,3 +180,42 @@ class TestToolRegistry:
 
         names = [t.name for t in ALL_TOOLS]
         assert len(names) == len(set(names))
+
+    @pytest.mark.parametrize(
+        ("path", "included", "excluded"),
+        [
+            (
+                "report.docx",
+                {"create_doc", "add_title", "update_paragraph", "add_image", "finish"},
+                {"set_cells", "add_slide"},
+            ),
+            (
+                "report.xlsx",
+                {"create_doc", "set_cells", "add_excel_chart", "finish"},
+                {"add_title", "add_slide", "add_image", "start_from_template"},
+            ),
+            (
+                "report.pptx",
+                {"create_doc", "add_slide", "add_image", "finish"},
+                {"add_title", "set_cells", "start_from_template"},
+            ),
+        ],
+    )
+    def test_tools_selected_by_document_type(self, path, included, excluded):
+        """每种文档只向 LLM 暴露相关工具。"""
+        names = {tool.name for tool in tools_for_doc_path(path)}
+        assert included <= names
+        assert names.isdisjoint(excluded)
+        assert {"query_vehicle", "ask_user", "finish"} <= names
+
+    @pytest.mark.parametrize("path", ["report.docx", "report.xlsx", "report.pptx"])
+    def test_selected_tool_names_unique(self, path):
+        tools = tools_for_doc_path(path)
+        names = [tool.name for tool in tools]
+        assert len(names) == len(set(names))
+
+    def test_unknown_extension_defaults_to_word_tools(self):
+        names = {tool.name for tool in tools_for_doc_path("report.unknown")}
+        assert {"add_title", "update_paragraph", "add_image"} <= names
+        assert "set_cells" not in names
+        assert "add_slide" not in names

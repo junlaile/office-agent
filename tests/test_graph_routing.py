@@ -11,6 +11,7 @@ from langgraph.graph import END
 
 from office_agent.agent.graph import (
     _MAX_NUDGE,
+    _agent_node_factory,
     _count_idle_turns,
     _nudge_node,
     _route_after_agent,
@@ -54,6 +55,36 @@ class TestCountIdleTurns:
     def test_empty_or_none(self):
         assert _count_idle_turns([]) == 0
         assert _count_idle_turns(None) == 0
+
+
+class TestAgentToolBinding:
+    @staticmethod
+    def _bound_tool_names(monkeypatch, doc_path):
+        captured = []
+
+        class FakeLLM:
+            def bind_tools(self, tools):
+                captured.extend(tools)
+                return self
+
+        monkeypatch.setattr("office_agent.agent.graph.get_llm", lambda: FakeLLM())
+        _agent_node_factory(doc_path)
+        return {tool.name for tool in captured}
+
+    def test_docx_binds_word_tools_only(self, monkeypatch):
+        names = self._bound_tool_names(monkeypatch, "report.docx")
+        assert {"add_title", "update_paragraph", "finish"} <= names
+        assert names.isdisjoint({"set_cells", "add_slide"})
+
+    def test_xlsx_binds_excel_tools_only(self, monkeypatch):
+        names = self._bound_tool_names(monkeypatch, "report.xlsx")
+        assert {"set_cells", "add_excel_chart", "finish"} <= names
+        assert names.isdisjoint({"add_title", "add_slide", "add_image"})
+
+    def test_pptx_binds_presentation_tools_only(self, monkeypatch):
+        names = self._bound_tool_names(monkeypatch, "report.pptx")
+        assert {"add_slide", "add_image", "finish"} <= names
+        assert names.isdisjoint({"add_title", "set_cells"})
 
 
 # ============================================================
