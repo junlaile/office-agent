@@ -55,13 +55,25 @@
 
 ## 重新生成
 
-模板由 `scripts/gen_official_templates.py` 一次性生成，如需调整范例文字或版式：
+模板由 `scripts/gen_official_templates.py` 生成，如需调整范例文字或版式：
 
 ```bash
+# 全量重新生成
 uv run --no-project --with python-docx python scripts/gen_official_templates.py
+# 只重生成一个文种（改版式时快速迭代）
+uv run --no-project --with python-docx python scripts/gen_official_templates.py --only 通知
+# 自检：注册表 ↔ 正文 spec ↔ 模板文件三方一致
+python scripts/gen_official_templates.py --check
 ```
 
-脚本自带数据，不依赖外部资源；输出固定写入本目录。
+脚本自带范例数据，不依赖外部资源；文件名与输出目录由
+`office_agent.domain.templates` 的文种注册表决定。
+
+## 新增一个文种
+
+见工程根目录的[《新增office模版的说明.md》](../../新增office模版的说明.md)——
+只需注册元数据 + 写正文范例两步，文件名、提示词文种清单与结语规范、
+工具描述、测试断言都自动派生。
 
 ## 模板的两类占位符
 
@@ -77,18 +89,18 @@ uv run --no-project --with python-docx python scripts/gen_official_templates.py
 
 agent 已内置公文模式，两条路径都可用：
 
-### 路径 1：自动识别（main.py 预推断）
+### 路径 1：自动识别（CLI 启动时预推断）
 
-用户需求里出现公文关键词时，`main.py` 自动识别文种并预创建文档：
+用户需求里出现公文关键词时，`cli/main.py` 自动识别文种并预创建文档：
 
 ```bash
-python main.py "写一份关于做好2026年夏季防汛工作的通知"
+uv run office-agent "写一份关于做好2026年夏季防汛工作的通知"
 # → 自动识别为【通知】
-# → 从 template/word/08-通知.docx 复制并预填版头占位
+# → 大纲预览批准后，从 template/word/08-通知.docx 复制并预填版头占位
 # → 启用公文模式系统提示词，agent 编辑正文范例文字
 ```
 
-文种识别（`office_agent.domain.templates.detect_doc_type`）覆盖 15 个文种的关键词，
+文种识别（`office_agent.domain.templates.detect_doc_type`）覆盖注册表里全部文种的关键词，
 
 上行文（请示/报告/议案）优先级最高，批复对"请示"做特殊优先处理。
 未命中关键词（如"项目周报""调研报告""Excel 表格"）走普通生成流程。
@@ -101,7 +113,7 @@ LLM 可在任何时候显式从指定文种模板创建文档（替代 `create_d
 
 ### 公文模式工作流
 
-1. **文档已就位**：main.py 或 start_from_template 已用 `merge` 把模板复制到
+1. **文档已就位**：`_prepare_official_doc` 或 `start_from_template` 已用 `merge` 把模板复制到
    输出路径并预填版头槽位（发文机关/字号/日期等）。
 2. **agent 编辑正文**：`view_text` 查看结构 → `add_paragraph` 追加真实内容 /
    `remove` 删范例段 / `set` 改具体段落 → `view_text` 自查。
@@ -113,15 +125,15 @@ LLM 可在任何时候显式从指定文种模板创建文档（替代 `create_d
 
 | 模块 | 作用 |
 |---|---|
-| `src/office_agent/templates.py` | 15 文种元数据、关键词识别、merge 数据构造 |
-| `src/office_agent/tools.py::start_from_template` | LLM 工具：从模板创建文档（含 title/addressee 引导） |
-| `src/office_agent/tools.py::update_paragraph` | LLM 工具：整段重写（改标题/主送/某段） |
-| `src/office_agent/tools.py::replace_text` | LLM 工具：子串替换，**保留字体**（正文占位编辑首选） |
-| `src/office_agent/tools.py::remove_paragraph` | LLM 工具：删范例段 |
-| `src/office_agent/officecli.py::merge_template` | officecli merge 封装（版头槽位预填） |
-| `src/office_agent/officecli.py::DocTool.find_replace` | 底层：保格式的子串替换 |
-| `src/office_agent/prompts.py::_OFFICIAL_BRANCH` | 公文模式系统提示词（含编辑工作流+公文规范） |
-| `main.py::_prepare_official_doc` | 启动时文种识别 + 预创建 |
+| `src/office_agent/domain/templates.py` | 文种注册表（唯一数据源）、关键词识别、merge 数据构造、注册表自检 |
+| `src/office_agent/tools/common.py::start_from_template` | LLM 工具：从模板创建文档（含 title/addressee 引导） |
+| `src/office_agent/tools/doc.py::update_paragraph` | LLM 工具：整段重写（改标题/主送/某段） |
+| `src/office_agent/tools/doc.py::replace_text` | LLM 工具：子串替换，**保留字体**（正文占位编辑首选） |
+| `src/office_agent/tools/doc.py::remove_paragraph` | LLM 工具：删范例段 |
+| `src/office_agent/office/runner.py::merge_template` | officecli merge 封装（版头槽位预填） |
+| `src/office_agent/office/doc.py::DocTool.find_replace` | 底层：保格式的子串替换 |
+| `src/office_agent/agent/prompts.py::_OFFICIAL_BRANCH` | 公文模式系统提示词（含编辑工作流+公文规范，结语清单由注册表渲染） |
+| `src/office_agent/cli/ui.py::_prepare_official_doc` | 启动时文种识别 + 预创建 |
 
 ## 参考依据
 

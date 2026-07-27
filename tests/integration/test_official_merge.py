@@ -51,8 +51,8 @@ def test_merge_filled_org(merged_output):
     assert "市公安局" in text
 
 
-def test_all_15_templates_merge(tmp_path):
-    """所有 15 个模板都能被 merge（批量验证）。"""
+def test_all_templates_merge(tmp_path):
+    """注册表里每个模板都能被 merge（批量验证，新增文种自动纳入）。"""
     for d in OFFICIAL_DOCS:
         out = str((tmp_path / f"test_{d.name}.docx").resolve())
         data = default_merge_data(d.name, org="测试机关")

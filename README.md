@@ -171,6 +171,7 @@ uv run office-agent "做一个 10 页的产品介绍 PPT"
 ```
 office-agent/
 ├── main.py                      # 兼容 shim → office_agent.cli.main
+├── 新增office模版的说明.md        # 怎么加一个新公文模板
 ├── scripts/
 │   ├── fetch_officecli.py       # 跨平台下载 officecli
 │   └── gen_official_templates.py # 生成 15 文种公文模板（GB/T 9704）
@@ -254,6 +255,7 @@ uv run mypy src/            # 类型检查
 
 ### 扩展
 
+- **新增公文模板**（加一个文种）：见[《新增office模版的说明.md》](新增office模版的说明.md)。只需在 `domain/templates.py` 的注册表登记 + 在 `scripts/gen_official_templates.py` 写正文范例，其余（文件名、提示词文种清单/结语、工具描述、测试）自动派生。
 - 如需更多 officecli 能力（条件格式、数据透视表、幻灯片切换动画、SmartArt 等），在 `office/doc.py` / `excel.py` / `pptx.py` 对应类加方法 + `tools/doc.py` / `excel.py` / `pptx.py` 加 `@tool`。命令面参考 `officecli help <format> <element>`。
 - 接 Web UI：`cli/main.py` 的 interrupt/resume 循环可替换为 WebSocket / HTTP 端点。
 
