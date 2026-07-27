@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from office_agent.officecli import merge_template
 from office_agent.domain.templates import OFFICIAL_DOCS, default_merge_data, template_path
+from office_agent.officecli import merge_template
 
 pytestmark = pytest.mark.integration
 
