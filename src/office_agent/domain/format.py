@@ -80,3 +80,13 @@ def infer_doc_kind(requirement: str) -> tuple[OfficeFormat, int]:
 
 def format_label(fmt: OfficeFormat | str) -> str:
     return _FORMAT_LABELS.get(fmt, str(fmt))
+
+
+def kind_from_path(doc_path: str) -> OfficeFormat:
+    """从文档路径扩展名判定格式。无法识别时默认 'docx'（与 session_doc_kind 一致）。"""
+    p = (doc_path or "").lower()
+    if p.endswith(".xlsx"):
+        return "xlsx"
+    if p.endswith(".pptx"):
+        return "pptx"
+    return "docx"

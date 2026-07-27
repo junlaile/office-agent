@@ -9,6 +9,7 @@ GB/T 9704 模板到输出路径，并传 doc_type 让本模块走 _OFFICIAL_BRAN
 此时文档已含完整版头/版记/页码，agent 只需编辑正文范例文字。
 """
 
+from office_agent.domain.format import kind_from_path
 from office_agent.domain.templates import format_closing_list, is_upward
 
 # 三种文档类型的标识，供 build_system_prompt 选用对应分支
@@ -318,6 +319,7 @@ def build_system_prompt(
     *,
     template_text: str = "",
     approved_outline: str = "",
+    vehicle_mode: bool = False,
 ) -> str:
     """构造系统提示词。
 
@@ -330,14 +332,17 @@ def build_system_prompt(
     段落结构、照路径编辑——把"靠 LLM 听话读模板"变成"上下文里已有"。
 
     approved_outline：用户已批准的 Markdown 大纲；非空时注入，要求按大纲写。
+
+    vehicle_mode：需求与车辆/交通相关时为 True，注入交通类文档专项流程
+    （ask_user 收集车牌 → query_vehicle 查询 → 写入文档）。默认不注入——
+    与需求无关时省 token，也避免 LLM 误套车辆查询流程。
     """
-    p = doc_path.lower()
-    if p.endswith(".xlsx"):
-        kind, kind_branch = "xlsx", _EXCEL_BRANCH
-    elif p.endswith(".pptx"):
-        kind, kind_branch = "pptx", _PPTX_BRANCH
-    else:
-        kind, kind_branch = "docx", _WORD_BRANCH
+    kind = kind_from_path(doc_path)
+    kind_branch = {
+        "xlsx": _EXCEL_BRANCH,
+        "pptx": _PPTX_BRANCH,
+        "docx": _WORD_BRANCH,
+    }[kind]
 
     # 公文模式：doc_type 非空 → 走 _OFFICIAL_BRANCH，否则用格式分支
     if doc_type:
@@ -375,13 +380,15 @@ def build_system_prompt(
     if approved_outline.strip():
         outline_block = _APPROVED_OUTLINE.format(outline=approved_outline.strip())
 
+    vehicle_block = f"{_VEHICLE_RULES}\n" if vehicle_mode else ""
+
     return (
         f"你是一个专业的 Office 文档生成 Agent。当前会话要生成的是 "
         f"【{role_desc}】文档。\n"
         f"{mode_hint}\n\n"
         f"{branch}\n"
         f"{outline_block}"
-        f"{_VEHICLE_RULES}\n"
+        f"{vehicle_block}"
         f"{common_rules}\n"
         f"【当前会话】生成的文档将保存到: {doc_path}\n"
         f"（文档类型已确定，工具会自动选对。"

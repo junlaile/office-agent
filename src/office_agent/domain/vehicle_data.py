@@ -249,3 +249,28 @@ def query(plate: str) -> dict[str, Any]:
     # TODO: 接入真实交管接口
     # return _real_query(plate)
     raise NotImplementedError("真实车辆查询接口尚未实现，请保持 MOCK_MODE=True")
+
+
+# 需求文本里出现任一关键词 → 判定为交通/车辆相关会话。
+# 用于决定是否绑定 query_vehicle 工具、注入交通类文档专项提示词。
+# 宁可多判（多带一个工具+一段提示词无害），不可漏判（漏了查不到车辆信息）。
+_VEHICLE_HINT_KEYWORDS = (
+    "车牌",
+    "车辆",
+    "汽车",
+    "机动车",
+    "交通事故",
+    "车祸",
+    "车险",
+    "理赔",
+    "违章",
+    "违法记录",
+    "肇事",
+    "驾驶",
+)
+
+
+def is_vehicle_related(text: str) -> bool:
+    """判断需求文本是否与车辆/交通相关（决定 query_vehicle 工具与提示词注入）。"""
+    t = text or ""
+    return any(k in t for k in _VEHICLE_HINT_KEYWORDS)

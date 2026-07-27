@@ -37,7 +37,9 @@ from office_agent.cli.user_input import (
     get_bridge,
 )
 from office_agent.config import settings
-from office_agent.tools import ALL_TOOLS, TOOL_BY_NAME
+from office_agent.domain.format import kind_from_path
+from office_agent.tools import TOOL_BY_NAME, tools_for_kind
+from office_agent.tools.batching import execute_batched, is_batchable
 
 from .llm import get_llm
 from .prompts import build_system_prompt
@@ -97,21 +99,31 @@ def _agent_node_factory(
     *,
     template_text: str = "",
     approved_outline: str = "",
+    vehicle_mode: bool = False,
 ):
     """构造 agent 节点。doc_path 用于系统提示词，doc_type 触发公文模式分支。
+
+    只绑定当前会话类型用得到的工具子集（通用 + 格式专属 + 控制），而非全量
+    49 个——每轮请求少发几十个无关工具的 JSON schema，也减少 LLM 误调用。
 
     template_text：公文模式下已读取的模板正文（view_text 输出），注入系统
     提示词让 LLM 第一轮即看到段落结构，无需自调 view_text。
     approved_outline：用户已批准的 Markdown 大纲。
+    vehicle_mode：需求与车辆/交通相关时为 True——附加 query_vehicle 工具
+    并在提示词里注入交通类文档专项流程。
     """
 
-    llm_with_tools = get_llm().bind_tools(ALL_TOOLS)
+    kind = kind_from_path(doc_path)
+    llm_with_tools = get_llm().bind_tools(
+        tools_for_kind(kind, include_vehicle=vehicle_mode)
+    )
     system_msg = SystemMessage(
         content=build_system_prompt(
             doc_path,
             doc_type,
             template_text=template_text,
             approved_outline=approved_outline,
+            vehicle_mode=vehicle_mode,
         )
     )
 
@@ -129,19 +141,21 @@ def _agent_node_factory(
                 injected.append(HumanMessage(content=f"{PREFIX_SUPPLEMENT}{text}"))
 
         limit = settings.recursion_limit
-        # 用 messages 数估算已用步数：每轮 agent+tools 约加 2 条消息。
-        # 粗略但足够触发软收尾。
-        used = len(messages) + len(injected)
+        # 真实轮数计数（state.steps，每次 agent 节点 +1）。一轮 agent+tools
+        # 消耗约 2 个超级步，据此对比 recursion_limit 触发软收尾。
+        # 不用 len(messages) 估算——并行工具调用一轮就能加十几条消息，会误触发。
+        rounds = int(state.get("steps", 0)) + 1  # 含本轮
+        used = rounds * 2
         soft_threshold = int(limit * SOFT_FINISH_RATIO)
 
         prompt_messages: list = [system_msg, *messages, *injected]
         # 软收尾提醒：接近预算时催促 finish
         if used >= soft_threshold:
-            remaining = max(0, limit - used)
-            logger.debug("触发软收尾提醒: used=%d, remaining=%d", used, remaining)
+            remaining_rounds = max(0, (limit - used) // 2)
+            logger.debug("触发软收尾提醒: rounds=%d, remaining=%d", rounds, remaining_rounds)
             reminder = SystemMessage(
                 content=(
-                    f"【系统提醒】已用约 {used // 2} 轮工具调用，剩余预算约 {remaining // 2} 轮。"
+                    f"【系统提醒】已用约 {rounds} 轮工具调用，剩余预算约 {remaining_rounds} 轮。"
                     f"请【立即停止添加新内容】，执行 view_text 自查（若还没查），"
                     f"然后调用 finish 宣告完成。不要再调用 add_* 工具。"
                 )
@@ -150,7 +164,7 @@ def _agent_node_factory(
 
         ai_msg = llm_with_tools.invoke(prompt_messages)
         # 把注入的 HumanMessage 也写回 state，保证 checkpoint / 后续轮次可见
-        return {"messages": [*injected, ai_msg]}
+        return {"messages": [*injected, ai_msg], "steps": 1}
 
     return agent_node
 
@@ -201,7 +215,8 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
                 )
         return updates
 
-    for tc in tool_calls:
+    def _exec_single(tc: Any) -> None:
+        """执行单个 tool_call（dict / ToolCall），结果追加到 tool_messages。"""
         name = tc.get("name")
         args = tc.get("args") or {}
         tc_id = tc.get("id", "")
@@ -218,7 +233,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
                     tool_call_id=tc_id,
                 )
             )
-            continue
+            return
 
         if tool is None:
             tool_messages.append(
@@ -227,7 +242,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
                     tool_call_id=tc_id,
                 )
             )
-            continue
+            return
 
         # ask_user 会触发 interrupt（抛 GraphInterrupt/GraphBubbleUp）；
         # 这种 LangGraph 控制流信号【必须】向上抛出给运行时处理，绝不能吞掉，
@@ -246,6 +261,31 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
                 tool_call_id=tc_id,
             )
         )
+
+    # 连续的"末尾追加"类写调用（add_paragraph × N / add_slide × N）合并为
+    # 一次 officecli batch：单次 open/save，避免 N 次全量文档读写。
+    # 合并失败（batch 原子回滚）时回退逐个执行，外部行为不变。
+    pending_batch: list[Any] = []
+
+    def _flush_batch() -> None:
+        if not pending_batch:
+            return
+        batch_results = execute_batched(pending_batch) if len(pending_batch) >= 2 else None
+        if batch_results is not None:
+            for tc_id, content in batch_results:
+                tool_messages.append(ToolMessage(content=content, tool_call_id=tc_id))
+        else:
+            for tc in pending_batch:
+                _exec_single(tc)
+        pending_batch.clear()
+
+    for tc in tool_calls:
+        if is_batchable(tc):
+            pending_batch.append(tc)
+        else:
+            _flush_batch()
+            _exec_single(tc)
+    _flush_batch()
 
     return updates
 
@@ -287,6 +327,7 @@ def build_graph(
     *,
     template_text: str = "",
     approved_outline: str = "",
+    vehicle_mode: bool = False,
 ):
     """构建并编译 ReAct agent 图。
 
@@ -297,6 +338,8 @@ def build_graph(
     template_text: 公文模式下已读取的模板正文（view_text 输出，带路径标注），
         注入提示词让 LLM 照路径编辑，避免跳过读模板直接瞎改。
     approved_outline: 用户已批准的 Markdown 大纲，注入系统提示词。
+    vehicle_mode: 需求与车辆/交通相关时为 True（main.py 用
+        is_vehicle_related 判定），附加 query_vehicle 工具与专项提示词。
     """
     builder = StateGraph(AgentState)
 
@@ -307,6 +350,7 @@ def build_graph(
             doc_type,
             template_text=template_text,
             approved_outline=approved_outline,
+            vehicle_mode=vehicle_mode,
         ),
     )
     builder.add_node("tools", _tools_node)

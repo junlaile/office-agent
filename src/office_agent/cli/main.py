@@ -51,8 +51,9 @@ from office_agent.cli.user_input import (
     UserInputBridge,
     set_bridge,
 )
-from office_agent.config import assert_llm_ready, settings
+from office_agent.config import assert_llm_ready, settings, setup_logging
 from office_agent.domain.templates import detect_doc_type
+from office_agent.domain.vehicle_data import is_vehicle_related
 from office_agent.tools import set_session_doc
 
 logger = logging.getLogger("office_agent.cli.main")
@@ -64,6 +65,7 @@ def main() -> None:
 
 
 def run() -> int:
+    setup_logging()
     bridge = UserInputBridge()
     set_bridge(bridge)
     bridge.start()
@@ -115,6 +117,7 @@ def _run_with_bridge(bridge: UserInputBridge) -> int:
         doc_type=doc_type,
         template_text=template_text,
         approved_outline=approved_outline,
+        vehicle_mode=is_vehicle_related(requirement),
     )
     thread_id = str(uuid.uuid4())
     config = {
