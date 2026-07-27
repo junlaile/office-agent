@@ -166,6 +166,55 @@ def reset_runner(bin_path: str | None = None) -> None:
 
 
 # ============================================================
+# 共享小工具（DocTool / ExcelTool / PptxTool 复用）
+# ============================================================
+def props_args(props: dict[str, Any]) -> list[str]:
+    """把 props 字典展开成 officecli 的 ``--prop k=v`` 参数序列。
+
+    值为 None 的键跳过（表示"不设置该属性"）。
+    """
+    args: list[str] = []
+    for k, v in props.items():
+        if v is None:
+            continue
+        args += ["--prop", f"{k}={v}"]
+    return args
+
+
+def last_child_index(doc_path: str, *, root: str, tag: str) -> int:
+    """查询 root 下最后一个 ``tag[N]`` 类子元素的索引（1-based）。无则返回 0。
+
+    统一 DocTool._last_paragraph_index / _last_table_index 与
+    PptxTool.last_slide_index 的同构实现：``get <doc> <root> --depth 1``
+    后解析 children 路径里的 ``tag[N]`` 取最大 N。
+
+    带 @paraId 等非数字寻址的路径跳过；任何异常按 0 处理（调用方兜底）。
+    """
+    marker = f"{tag}["
+    try:
+        data = get_runner().run(
+            ["get", doc_path, root, "--depth", "1"],
+            json_output=True,
+        )
+        children = (
+            data.get("data", {}).get("results", [{}])[0].get("children", [])
+            if isinstance(data, dict)
+            else []
+        )
+        indices = []
+        for c in children:
+            p = c.get("path", "")
+            if marker not in p:
+                continue
+            seg = p.rsplit(marker, 1)[1].rstrip("]")
+            if seg.isdigit():
+                indices.append(int(seg))
+        return max(indices) if indices else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+# ============================================================
 # 受限逃生口：白名单 raw
 # ============================================================
 _RAW_WHITELIST = {

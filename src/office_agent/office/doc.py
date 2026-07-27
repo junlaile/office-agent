@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .runner import OfficeCLIError, get_runner
+from .runner import OfficeCLIError, get_runner, last_child_index, props_args
 
 logger = logging.getLogger(__name__)
 
@@ -62,91 +62,74 @@ class DocTool:
         """刷盘并释放（关闭常驻会话）。"""
         return self.runner.run(["close", self.doc_path])
 
-    # ---- 写入 ----
-    def add_title(self, text: str) -> str:
-        """加文档主标题。显式大字号 + 加粗，居中。"""
-        return self.runner.run(
-            [
-                "add",
-                self.doc_path,
-                "/body",
-                "--type",
-                "paragraph",
-                "--prop",
-                f"text={text}",
-                "--prop",
-                f"size={_TITLE_SIZE_PT}",
-                "--prop",
-                "bold=true",
-                "--prop",
-                "align=center",
-            ]
-        )
+    # ---- 段落 props 构造器（argv 单发与 batch 合并共用一份定义） ----
+    @staticmethod
+    def title_props(text: str) -> dict:
+        """主标题段的 props：显式大字号 + 加粗，居中。"""
+        return {"text": text, "size": _TITLE_SIZE_PT, "bold": "true", "align": "center"}
 
-    def add_heading(self, text: str, level: int = 1) -> str:
-        """加章节标题。level 1-9，字号递减、加粗。
+    @staticmethod
+    def heading_props(text: str, level: int = 1) -> dict:
+        """章节标题段的 props。level 1-9，字号递减、加粗。
 
         同时设置大纲级别（outlineLvl = level-1），让 Word 目录（TOC）能收录
         这些标题——TOC 的 ``\\o "1-3"`` 只收录带大纲级别 0-2 的段落，不设
         outlineLvl 的标题进不了目录（目录会显示空占位"Update field..."）。
         """
         level = max(1, min(9, int(level)))
-        size = _HEADING_SIZE_PT[level]
+        return {
+            "text": text,
+            "size": _HEADING_SIZE_PT[level],
+            "bold": "true",
+            "spaceBefore": "12pt",
+            "spaceAfter": "6pt",
+            # 大纲级别（0-based）：让 TOC 能收录本标题
+            "outlineLvl": level - 1,
+        }
+
+    @staticmethod
+    def paragraph_props(
+        text: str, *, bold: bool = False, italic: bool = False, size: float | None = None
+    ) -> dict:
+        """正文段落的 props。"""
+        return {
+            "text": text,
+            "bold": "true" if bold else None,
+            "italic": "true" if italic else None,
+            "size": size,
+        }
+
+    @staticmethod
+    def list_item_props(text: str, *, ordered: bool = False) -> dict:
+        """列表项的 props。用 listStyle=bullet/ordered（实测有效）。"""
+        return {"text": text, "listStyle": "ordered" if ordered else "bullet"}
+
+    def _add_body_paragraph(self, props: dict) -> str:
+        """按 props 在 /body 末尾加一个段落（各 add_* 的共同出口）。"""
         return self.runner.run(
-            [
-                "add",
-                self.doc_path,
-                "/body",
-                "--type",
-                "paragraph",
-                "--prop",
-                f"text={text}",
-                "--prop",
-                f"size={size}",
-                "--prop",
-                "bold=true",
-                "--prop",
-                "spaceBefore=12pt",
-                "--prop",
-                "spaceAfter=6pt",
-                # 大纲级别（0-based）：让 TOC 能收录本标题
-                "--prop",
-                f"outlineLvl={level - 1}",
-            ]
+            ["add", self.doc_path, "/body", "--type", "paragraph", *props_args(props)]
         )
+
+    # ---- 写入 ----
+    def add_title(self, text: str) -> str:
+        """加文档主标题。显式大字号 + 加粗，居中。"""
+        return self._add_body_paragraph(self.title_props(text))
+
+    def add_heading(self, text: str, level: int = 1) -> str:
+        """加章节标题（props 语义见 :meth:`heading_props`）。"""
+        return self._add_body_paragraph(self.heading_props(text, level))
 
     def add_paragraph(
         self, text: str, *, bold: bool = False, italic: bool = False, size: float | None = None
     ) -> str:
         """加正文段落。"""
-        props = [f"text={text}"]
-        if bold:
-            props.append("bold=true")
-        if italic:
-            props.append("italic=true")
-        if size is not None:
-            props.append(f"size={size}")
-        args = ["add", self.doc_path, "/body", "--type", "paragraph"]
-        for p in props:
-            args += ["--prop", p]
-        return self.runner.run(args)
+        return self._add_body_paragraph(
+            self.paragraph_props(text, bold=bold, italic=italic, size=size)
+        )
 
     def add_list_item(self, text: str, *, ordered: bool = False) -> str:
-        """加列表项。用 listStyle=bullet/ordered（实测有效）。"""
-        style = "ordered" if ordered else "bullet"
-        return self.runner.run(
-            [
-                "add",
-                self.doc_path,
-                "/body",
-                "--type",
-                "paragraph",
-                "--prop",
-                f"text={text}",
-                "--prop",
-                f"listStyle={style}",
-            ]
-        )
+        """加列表项。"""
+        return self._add_body_paragraph(self.list_item_props(text, ordered=ordered))
 
     def add_table(self, data: list[list[str]], *, has_header: bool = True) -> Any:
         """加表格。data 是二维字符串数组。
@@ -234,24 +217,7 @@ class DocTool:
 
     def _last_table_index(self) -> int:
         """查询 /body 下最后一个 table 的索引（1-based）。无表返回 0。"""
-        try:
-            data = self.runner.run(
-                ["get", self.doc_path, "/body", "--depth", "1"],
-                json_output=True,
-            )
-            children = (
-                data.get("data", {}).get("results", [{}])[0].get("children", [])
-                if isinstance(data, dict)
-                else []
-            )
-            tbl_indices = [
-                int(p.split("tbl[")[1].rstrip("]"))
-                for c in children
-                if (p := c.get("path", "")) and "tbl[" in p
-            ]
-            return max(tbl_indices) if tbl_indices else 0
-        except Exception:  # noqa: BLE001
-            return 0
+        return last_child_index(self.doc_path, root="/body", tag="tbl")
 
     def batch(self, ops: list[dict]) -> Any:
         """批量原子操作。ops 见 officecli batch 文档。
@@ -318,24 +284,7 @@ class DocTool:
 
     def _last_paragraph_index(self) -> int:
         """查询 /body 下最后一个 paragraph 的索引（1-based）。无段落返回 0。"""
-        try:
-            data = self.runner.run(
-                ["get", self.doc_path, "/body", "--depth", "1"],
-                json_output=True,
-            )
-            children = (
-                data.get("data", {}).get("results", [{}])[0].get("children", [])
-                if isinstance(data, dict)
-                else []
-            )
-            p_indices = [
-                int(p.split("p[")[1].rstrip("]"))
-                for c in children
-                if (p := c.get("path", "")) and "/p[" in p
-            ]
-            return max(p_indices) if p_indices else 0
-        except Exception:  # noqa: BLE001
-            return 0
+        return last_child_index(self.doc_path, root="/body", tag="p")
 
     # ---- 编辑（改/删/替换）----
     def set_paragraph_text(self, path: str, text: str) -> str:

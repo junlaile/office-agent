@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from .runner import OfficeCLIError, get_runner
+from .runner import OfficeCLIError, get_runner, last_child_index, props_args
 
 logger = logging.getLogger(__name__)
 
@@ -39,46 +39,36 @@ class PptxTool:
         return self.runner.run(["close", self.doc_path])
 
     # ---- 幻灯片 ----
-    def add_slide(self, *, title: str = "", text: str = "", layout: str = "") -> str:
-        """加一张幻灯片。
+    @staticmethod
+    def slide_props(*, title: str = "", text: str = "", layout: str = "") -> dict:
+        """幻灯片的 props（argv 单发与 batch 合并共用一份定义）。
 
-        参数:
-            title: 标题文字（非空时自动建标题占位符 phType=title）。
-            text: 正文文字（非空时自动建正文占位符 phType=body）。
-            layout: 可选布局名（如 'Title Slide' / 'Title and Content' / 'Blank'）。
-                    留空用默认布局。
+        title: 标题文字（非空时自动建标题占位符 phType=title）。
+        text: 正文文字（非空时自动建正文占位符 phType=body）。
+        layout: 可选布局名（如 'Title Slide' / 'Blank'）。留空用默认布局。
+        """
+        return {
+            "title": title or None,
+            "text": text or None,
+            "layout": layout or None,
+        }
+
+    def add_slide(self, *, title: str = "", text: str = "", layout: str = "") -> str:
+        """加一张幻灯片（props 语义见 :meth:`slide_props`）。
 
         返回 officecli 的 add 输出（含新幻灯片路径）。
         """
-        args = ["add", self.doc_path, "/", "--type", "slide"]
-        if title:
-            args += ["--prop", f"title={title}"]
-        if text:
-            args += ["--prop", f"text={text}"]
-        if layout:
-            args += ["--prop", f"layout={layout}"]
-        return self.runner.run(args)
+        props = self.slide_props(title=title, text=text, layout=layout)
+        return self.runner.run(
+            ["add", self.doc_path, "/", "--type", "slide", *props_args(props)]
+        )
 
-    def _last_slide_index(self) -> int:
+    def last_slide_index(self) -> int:
         """查询最后一张幻灯片的索引（1-based）。无返回 0。"""
-        try:
-            data = self.runner.run(
-                ["get", self.doc_path, "/", "--depth", "1"],
-                json_output=True,
-            )
-            children = (
-                data.get("data", {}).get("results", [{}])[0].get("children", [])
-                if isinstance(data, dict)
-                else []
-            )
-            idxs = [
-                int(p.split("slide[")[1].rstrip("]"))
-                for c in children
-                if (p := c.get("path", "")) and "slide[" in p
-            ]
-            return max(idxs) if idxs else 0
-        except Exception:  # noqa: BLE001
-            return 0
+        return last_child_index(self.doc_path, root="/", tag="slide")
+
+    # 兼容旧私有名（tools 层历史代码引用过）
+    _last_slide_index = last_slide_index
 
     # ---- 文本框 / 形状 ----
     def add_textbox(
