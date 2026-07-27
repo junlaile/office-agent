@@ -116,7 +116,7 @@ class TestAgentNodeInjectsPending:
                 return AIMessage(content="ok", tool_calls=[])
 
         monkeypatch.setattr(graph_mod, "get_llm", lambda: FakeLLM())
-        monkeypatch.setattr(graph_mod, "ALL_TOOLS", [])
+        monkeypatch.setattr(graph_mod, "tools_for_doc_path", lambda _path: [])
         monkeypatch.setattr(
             graph_mod,
             "build_system_prompt",
