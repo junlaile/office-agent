@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from datetime import datetime
@@ -39,15 +40,29 @@ def _readline(prompt: str = "") -> str:
         return bridge.blocking_readline(prompt)
     return input(prompt)
 
-# ANSI 颜色（Windows 10+ 终端支持）
-_CYAN = "[36m"
-_YELLOW = "[33m"
-_GREEN = "[32m"
-_RED = "[31m"
-_MAGENTA = "[35m"
-_DIM = "[2m"
-_BOLD = "[1m"
-_RESET = "[0m"
+# ANSI 颜色（Windows 10+ 终端支持）。
+# 输出重定向 / 设置 NO_COLOR 时禁用，避免控制码混进管道或日志。
+def _color_enabled() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return sys.stdout.isatty()
+
+
+def _ansi(code: str) -> str:
+    return code if _USE_COLOR else ""
+
+
+_USE_COLOR = _color_enabled()
+_CYAN = _ansi("\033[36m")
+_YELLOW = _ansi("\033[33m")
+_GREEN = _ansi("\033[32m")
+_RED = _ansi("\033[31m")
+_MAGENTA = _ansi("\033[35m")
+_DIM = _ansi("\033[2m")
+_BOLD = _ansi("\033[1m")
+_RESET = _ansi("\033[0m")
 
 
 def _banner() -> None:
