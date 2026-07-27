@@ -4,7 +4,7 @@
     START → agent → (路由) → tools → (路由) → agent ↻ ... → END
                            ↘ nudge → agent ↺（空转纠偏，最多 _MAX_NUDGE 次）
 
-    - agent 节点: LLM.bind_tools(ALL_TOOLS)，决定调哪个工具
+    - agent 节点: 按文档类型筛选工具后调用 LLM.bind_tools，决定调哪个工具
     - tools 节点: 手写（不用 ToolNode），因为要处理
         · ask_user 的 interrupt 挂起
         · finish 的短路完成
