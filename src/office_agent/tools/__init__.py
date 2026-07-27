@@ -7,12 +7,12 @@
       _tool() 工厂按 kind 返回 DocTool / ExcelTool / PptxTool。
     - 通用工具（create_doc / add_table / view_text / validate_doc / finish）
       三种格式都支持；docx/xlsx/pptx 专属工具在其他格式下给出明确提示。
-    - ask_user 工具内部用 LangGraph interrupt 挂起，等用户输入后作为
-      ToolMessage 回传给 agent。
+    - ask_user 只构造结构化交互请求；LangGraph interaction 节点负责
+      interrupt/resume 并把答案作为 ToolMessage 回传给 agent。
     - finish 工具让 LLM 显式宣告完成。
 
 结构:
-    - 本 ``__init__.py``: 会话状态基础设施 + 聚合 ALL_TOOLS/TOOL_BY_NAME。
+    - 本 ``__init__.py``: 会话状态基础设施 + ToolRegistry 注册。
     - ``common.py``: 通用工具（三格式共用）+ 控制（ask_user/finish）+ 公文/查询。
     - ``doc.py``:    Word 专属工具。
     - ``excel.py``:  Excel 专属工具。
@@ -151,6 +151,16 @@ from .pptx import (  # noqa: E402
     set_theme_colors,
     set_theme_fonts,
 )
+from .registry import (  # noqa: E402
+    ALL_DOCUMENT_KINDS,
+    DOCX_KINDS,
+    PPTX_KINDS,
+    XLSX_KINDS,
+    ExecutionMode,
+    SideEffect,
+    ToolRegistry,
+    ToolSpec,
+)
 
 # ============================================================
 # 工具清单（按文档类型绑定；ALL_TOOLS 保留作注册表）
@@ -224,37 +234,35 @@ CONTROL_TOOLS = [
 ]
 
 
-def tools_for_doc_path(doc_path: str) -> list:
-    """按输出文件扩展名返回应暴露给 LLM 的工具。
-
-    未知扩展名与会话路由保持一致，默认按 Word 处理。返回新列表，避免调用方
-    修改模块级工具集合。
-    """
-    path = doc_path.lower()
-    if path.endswith(".xlsx"):
-        specific = EXCEL_TOOLS
-        image_tools = []
-    elif path.endswith(".pptx"):
-        specific = PPTX_TOOLS
-        image_tools = IMAGE_TOOLS
-    else:
-        specific = WORD_TOOLS
-        image_tools = IMAGE_TOOLS
-    return [*COMMON_TOOLS, *image_tools, *specific, *CONTROL_TOOLS]
-
-
-# 全量注册表仅供工具执行节点按名称分发，以及兼容既有导入。
-ALL_TOOLS = [
-    *COMMON_TOOLS,
-    *IMAGE_TOOLS,
-    *WORD_TOOLS,
-    *EXCEL_TOOLS,
-    *PPTX_TOOLS,
-    *CONTROL_TOOLS,
+TOOL_SPECS = [
+    ToolSpec(create_doc, ALL_DOCUMENT_KINDS, side_effect=SideEffect.INIT),
+    ToolSpec(add_table, ALL_DOCUMENT_KINDS),
+    ToolSpec(view_text, ALL_DOCUMENT_KINDS, side_effect=SideEffect.READ),
+    ToolSpec(validate_doc, ALL_DOCUMENT_KINDS, side_effect=SideEffect.READ),
+    ToolSpec(set_doc_properties, ALL_DOCUMENT_KINDS),
+    ToolSpec(add_image, frozenset({"docx", "pptx"})),
+    ToolSpec(start_from_template, DOCX_KINDS, side_effect=SideEffect.INIT),
+    *(ToolSpec(tool, DOCX_KINDS) for tool in WORD_TOOLS if tool is not start_from_template),
+    *(ToolSpec(tool, XLSX_KINDS) for tool in EXCEL_TOOLS),
+    *(ToolSpec(tool, PPTX_KINDS) for tool in PPTX_TOOLS),
+    ToolSpec(query_vehicle, ALL_DOCUMENT_KINDS, side_effect=SideEffect.NONE),
+    ToolSpec(
+        ask_user,
+        ALL_DOCUMENT_KINDS,
+        execution_mode=ExecutionMode.INTERACTION,
+        side_effect=SideEffect.HUMAN,
+        can_batch=False,
+    ),
+    ToolSpec(finish, ALL_DOCUMENT_KINDS, side_effect=SideEffect.TERMINAL),
 ]
 
-# 工具名 -> 工具对象，便于 tools 节点按名分发
-TOOL_BY_NAME = {t.name: t for t in ALL_TOOLS}
+REGISTRY = ToolRegistry(TOOL_SPECS)
+
+# 兼容既有导入；实际来源统一为注册表。
+ALL_TOOLS = REGISTRY.all_tools
+TOOL_BY_NAME = REGISTRY.tool_by_name
+SPEC_BY_NAME = REGISTRY.spec_by_name
+tools_for_doc_path = REGISTRY.bindable_tools
 
 __all__ = [
     # 会话基础设施
@@ -268,6 +276,13 @@ __all__ = [
     # 聚合
     "ALL_TOOLS",
     "TOOL_BY_NAME",
+    "TOOL_SPECS",
+    "SPEC_BY_NAME",
+    "REGISTRY",
+    "ToolSpec",
+    "ToolRegistry",
+    "ExecutionMode",
+    "SideEffect",
     "COMMON_TOOLS",
     "IMAGE_TOOLS",
     "WORD_TOOLS",

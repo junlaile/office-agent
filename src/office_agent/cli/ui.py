@@ -19,6 +19,7 @@ from datetime import datetime
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
+from office_agent.cli.interactions import CLIInteractionAdapter
 from office_agent.cli.user_input import get_bridge
 from office_agent.config import settings
 from office_agent.domain.format import infer_doc_kind
@@ -394,12 +395,7 @@ def _print_tool_results(message: ToolMessage) -> None:
 
 
 def _handle_interrupt(graph, config: dict) -> Command | None:
-    """若当前挂在 interrupt，按 payload 形态渲染并收集用户输入。
-
-    支持两种 payload:
-      - 表单卡片（新）: {title, description, fields:[{key,label,required,options,hint}]}
-      - 单问题（旧）  : {question, options}  —— 向后兼容
-    """
+    """若当前挂在 interrupt，通过 CLI 适配器收集结构化响应。"""
     snapshot = graph.get_state(config)
     if snapshot is None:
         return None
@@ -411,13 +407,9 @@ def _handle_interrupt(graph, config: dict) -> Command | None:
         return None
 
     payload = interrupts[0].value or {}
-
-    # 分支：表单卡片 vs 单问题
-    resume_value: dict[str, str] | str
-    if isinstance(payload, dict) and payload.get("fields"):
-        resume_value = _collect_form(payload)
-    else:
-        resume_value = _collect_single_question(payload)
+    request = payload if isinstance(payload, dict) else {"question": str(payload)}
+    adapter = CLIInteractionAdapter(_collect_form, _collect_single_question)
+    resume_value = adapter.collect(request)
 
     print(f"\n{_DIM}已收到，继续生成…{_RESET}")
     return Command(resume=resume_value)

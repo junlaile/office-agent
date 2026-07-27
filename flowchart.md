@@ -60,18 +60,20 @@ flowchart TD
   streamStart[graph.stream] --> agentNode[agent 节点]
   agentNode --> routeAfter{有 tool_calls?}
 
-  routeAfter -->|有| toolsNode[tools 节点]
+  routeAfter -->|普通工具| toolsNode[tools 节点]
+  routeAfter -->|独占交互工具| prepareInteraction[准备交互请求]
   routeAfter -->|仅文字且未超限| nudgeNode[nudge 纠偏]
   routeAfter -->|结束| endGraph[END]
 
   nudgeNode --> agentNode
 
-  toolsNode --> toolKind{工具类型}
-  toolKind -->|ask_user| interrupt[interrupt 挂起]
+  prepareInteraction --> interactionNode[interaction 节点]
+  interactionNode --> interrupt[interrupt 挂起]
   interrupt --> collectUI[CLI 收集答案]
   collectUI --> resume[Command resume]
   resume --> streamStart
 
+  toolsNode --> toolKind{工具类型}
   toolKind -->|create_doc / add_* / 编辑| writeFile[officecli 写文件]
   writeFile --> backAgent[回 agent]
   backAgent --> agentNode

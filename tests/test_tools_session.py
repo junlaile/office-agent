@@ -9,7 +9,11 @@ from __future__ import annotations
 import pytest
 
 from office_agent.tools import (
+    REGISTRY,
+    SPEC_BY_NAME,
     TOOL_BY_NAME,
+    ExecutionMode,
+    SideEffect,
     session_doc_kind,
     session_doc_path,
     set_session_doc,
@@ -219,3 +223,25 @@ class TestToolRegistry:
         assert {"add_title", "update_paragraph", "add_image"} <= names
         assert "set_cells" not in names
         assert "add_slide" not in names
+
+    def test_registry_metadata_matches_tools(self):
+        assert len(REGISTRY.specs) == 49
+        assert set(SPEC_BY_NAME) == set(TOOL_BY_NAME)
+
+    def test_interaction_tools_are_exclusive(self):
+        interaction_specs = {
+            spec.name: spec
+            for spec in REGISTRY.specs
+            if spec.execution_mode is not ExecutionMode.DIRECT
+        }
+        assert set(interaction_specs) == {"ask_user"}
+        assert all(not spec.can_batch for spec in interaction_specs.values())
+        assert interaction_specs["ask_user"].side_effect is SideEffect.HUMAN
+
+    def test_side_effect_metadata(self):
+        assert SPEC_BY_NAME["create_doc"].side_effect is SideEffect.INIT
+        assert SPEC_BY_NAME["start_from_template"].side_effect is SideEffect.INIT
+        assert SPEC_BY_NAME["view_text"].side_effect is SideEffect.READ
+        assert SPEC_BY_NAME["validate_doc"].side_effect is SideEffect.READ
+        assert SPEC_BY_NAME["query_vehicle"].side_effect is SideEffect.NONE
+        assert SPEC_BY_NAME["finish"].side_effect is SideEffect.TERMINAL

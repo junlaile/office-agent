@@ -11,15 +11,17 @@
    ↓
 [文档类型推断]（关键词 → .docx/.xlsx/.pptx，拿不准问用户）
    ↓
-[agent 节点] ←──────┐
-  DeepSeek + bind_tools(49 个工具)
+[agent 节点] ←──────────────┐
+  DeepSeek + 按文档类型 bind_tools
   系统提示词按文档类型走对应分支（Word/Excel/PPTX）
   自主决定调哪个工具
   节点边界注入忙时用户补充 / 强制打断
    ↓
-[tools 节点] ──→ 执行(officecli subprocess / interrupt / finish)
+[tools 节点] ──→ 执行(officecli subprocess / finish)
   _tool() 工厂按扩展名路由到 DocTool/ExcelTool/PptxTool
   ToolMessage 回传
+   ↓
+[interaction 节点] ──→ interrupt / resume（表单或确认）
    ↓ (路由)
   还有 tool_calls → 回 agent
   finish / 无 tool_calls → END
@@ -192,7 +194,7 @@ office-agent/
 │   │   ├── format.py            # Office 格式推断（docx/xlsx/pptx）
 │   │   └── vehicle_data.py      # 车辆查询 mock
 │   └── tools/                   # @tool 工具集包
-│       ├── __init__.py          # 会话基础设施 + ALL_TOOLS 聚合
+│       ├── __init__.py          # 会话基础设施 + ToolRegistry 注册
 │       ├── common.py / doc.py / excel.py / pptx.py
 ├── template/word/               # 15 文种公文模板（GB/T 9704）
 ├── tests/                       # 测试套件（pytest）
@@ -208,7 +210,7 @@ office-agent/
 
 - **DeepSeek tool_calls**：`llm.bind_tools(tools)`；不强制 `tool_choice`，不用 `response_format`（thinking 模式冲突）。
 - **Word 大纲预览门控**：写 `.docx` 前用无工具 LLM 生成 Markdown 大纲；用户批准后才 `_prepare_official_doc` / `create_doc`。
-- **手写 tools 节点**：比内置 `ToolNode` 灵活，能处理 `ask_user` 的 `interrupt` 挂起和 `finish` 的短路完成。
+- **分层工具执行**：普通工具由 `tools` 节点执行，交互工具由独立 `interaction` 节点挂起/恢复；元数据注册表统一控制文档类型、批处理和副作用策略。
 - **会话级 doc_path 注入**：启动时按需求推断文档类型和输出路径，所有工具共享，LLM 不需传路径参数。
 - **扩展名路由**：`tools._tool()` 工厂按 `.docx/.xlsx/.pptx` 后缀返回对应 Tool 类；通用工具跨格式，专属工具在其他格式下给出明确引导。
 - **公文模式**：识别 15 法定文种 → 从 GB/T 9704 模板创建 → LLM 用 update_paragraph/replace_text/remove_paragraph 编辑正文（保字体）。

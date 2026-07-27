@@ -1,13 +1,13 @@
 """ReAct agent 图装配（LangGraph 原生写法 + DeepSeek tool_calls）。
 
 结构:
-    START → agent → (路由) → tools → (路由) → agent ↻ ... → END
-                           ↘ nudge → agent ↺（空转纠偏，最多 _MAX_NUDGE 次）
+    START → agent → tools → agent ↻ ... → END
+                   ↘ prepare_interaction → interaction → agent
+                   ↘ nudge → agent（空转纠偏，最多 _MAX_NUDGE 次）
 
     - agent 节点: 按文档类型筛选工具后调用 LLM.bind_tools，决定调哪个工具
-    - tools 节点: 手写（不用 ToolNode），因为要处理
-        · ask_user 的 interrupt 挂起
-        · finish 的短路完成
+    - tools 节点: 批量执行普通工具，并按元数据处理终止工具
+    - interaction 节点: 独占处理表单/确认，直接调用 LangGraph interrupt
     - nudge 节点: agent 只输出文字、没发 tool_calls（"光说不练"）时注入纠偏提示，
         回 agent 重试。避免 DeepSeek 用自然语言描述意图却不调工具、首轮直接判死。
     - 路由: agent 之后，有 tool_calls → tools；有内容但无 tool_calls 且未达上限
@@ -24,12 +24,14 @@
 from __future__ import annotations
 
 import logging
+import json
+from collections.abc import Mapping
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from office_agent.cli.user_input import (
     PREFIX_FORCE,
@@ -37,11 +39,17 @@ from office_agent.cli.user_input import (
     get_bridge,
 )
 from office_agent.config import settings
-from office_agent.tools import TOOL_BY_NAME, tools_for_doc_path
+from office_agent.tools import (
+    SPEC_BY_NAME,
+    TOOL_BY_NAME,
+    ExecutionMode,
+    SideEffect,
+    tools_for_doc_path,
+)
 
 from .llm import get_llm
 from .prompts import build_system_prompt
-from .state import AgentState
+from .state import AgentState, InteractionRequest, ToolExecutionRecord
 
 logger = logging.getLogger(__name__)
 
@@ -156,98 +164,272 @@ def _agent_node_factory(
 
 
 def _tools_node(state: AgentState) -> dict[str, Any]:
-    """执行 agent 要求的工具调用。
-
-    特殊处理:
-        - ask_user: 内部 interrupt 挂起，resume 后返回值即用户答案，
-          包成 ToolMessage 回传。
-        - finish: 标记 done，短路结束。
-    其余 officecli 工具直接 .invoke 执行。
-    """
+    """批量执行 direct 工具；非批处理工具混入批次时整批取消。"""
     messages = state.get("messages", [])
     last_ai: AIMessage = messages[-1]
     tool_messages: list[ToolMessage] = []
     updates: dict[str, Any] = {"messages": tool_messages}
     tool_calls = last_ai.tool_calls or []
+    executed = dict(state.get("executed_calls", {}))
 
-    # ask_user 必须独占执行：它内部 interrupt 会挂起整个节点，若同批还有
-    # 其他工具，会破坏"tool_calls 必须紧跟对应 ToolMessage"的消息约束
-    # （DeepSeek 报 400 insufficient tool messages）。
-    # 处理：检测到同批含 ask_user 时，整批都不执行，给每个 tool_call 回一条
-    # ToolMessage 提示 LLM "请单独调用 ask_user"，下一轮 LLM 会重新决策。
-    # 这样绝不触发 interrupt，消息配对始终完整。
-    if any(tc.get("name") == "ask_user" for tc in tool_calls) and len(tool_calls) > 1:
+    exclusive_names = {
+        spec.name
+        for tc in tool_calls
+        if (spec := SPEC_BY_NAME.get(tc.get("name", ""))) is not None and not spec.can_batch
+    }
+    if exclusive_names and len(tool_calls) > 1:
+        exclusive_text = "、".join(sorted(exclusive_names))
         for tc in tool_calls:
-            if tc.get("name") == "ask_user":
-                tool_messages.append(
-                    ToolMessage(
-                        content=(
-                            "本批工具调用中同时包含了 ask_user 和其他工具。"
-                            "ask_user 会暂停整个流程等待用户输入，必须【单独】调用。"
-                            "请在下一次回复里【只】调用 ask_user，不要附带其他工具。"
-                        ),
-                        tool_call_id=tc.get("id", ""),
-                    )
+            name = tc.get("name", "")
+            tc_id = tc.get("id", "")
+            if name in exclusive_names:
+                content = (
+                    f"本批包含必须独占执行的工具 {exclusive_text}。"
+                    f"请在下一次回复里只调用 {name}，不要附带其他工具。"
                 )
             else:
-                tool_messages.append(
-                    ToolMessage(
-                        content=(
-                            f"该 {tc.get('name')} 调用已取消（本批同时调用了 ask_user）。"
-                            f"请在 ask_user 完成后重新发起。"
-                        ),
-                        tool_call_id=tc.get("id", ""),
-                    )
+                content = (
+                    f"该 {name} 调用已取消（本批同时包含独占工具 {exclusive_text}），"
+                    "请在交互完成后重新发起。"
                 )
+            tool_messages.append(ToolMessage(content=content, tool_call_id=tc_id))
+            executed[tc_id] = ToolExecutionRecord(
+                tool_call_id=tc_id,
+                tool_name=name,
+                status="cancelled",
+                result=content,
+            )
+        updates["executed_calls"] = executed
         return updates
 
     for tc in tool_calls:
-        name = tc.get("name")
+        name = tc.get("name", "")
         args = tc.get("args") or {}
         tc_id = tc.get("id", "")
-        tool = TOOL_BY_NAME.get(name)
+        spec = SPEC_BY_NAME.get(name)
 
-        if name == "finish":
-            # 短路完成：把 summary 存入 state，并回传 ToolMessage
+        if tc_id in executed:
+            record = executed[tc_id]
+            tool_messages.append(
+                ToolMessage(content=str(record.get("result", "")), tool_call_id=tc_id)
+            )
+            continue
+
+        if spec is not None and spec.side_effect is SideEffect.TERMINAL:
             summary = args.get("summary", "")
             updates["done"] = True
             updates["summary"] = summary
+            result = f"已完成: {summary}"
             tool_messages.append(
-                ToolMessage(
-                    content=f"已完成: {summary}",
-                    tool_call_id=tc_id,
-                )
+                ToolMessage(content=result, tool_call_id=tc_id)
+            )
+            executed[tc_id] = ToolExecutionRecord(
+                tool_call_id=tc_id,
+                tool_name=name,
+                status="completed",
+                result=result,
             )
             continue
 
+        tool = TOOL_BY_NAME.get(name)
         if tool is None:
+            result = f"错误: 未知工具 '{name}'"
             tool_messages.append(
-                ToolMessage(
-                    content=f"错误: 未知工具 '{name}'",
-                    tool_call_id=tc_id,
-                )
+                ToolMessage(content=result, tool_call_id=tc_id)
+            )
+            executed[tc_id] = ToolExecutionRecord(
+                tool_call_id=tc_id,
+                tool_name=name,
+                status="failed",
+                result=result,
             )
             continue
 
-        # ask_user 会触发 interrupt（抛 GraphInterrupt/GraphBubbleUp）；
-        # 这种 LangGraph 控制流信号【必须】向上抛出给运行时处理，绝不能吞掉，
-        # 否则 agent 会误以为工具出错而放弃提问。
         try:
             result = tool.invoke(args)
-        except GraphBubbleUp:
-            # interrupt 等控制流：原样上抛，由 LangGraph 挂起/恢复
-            raise
         except Exception as e:  # noqa: BLE001
             logger.exception("工具 %s 执行失败", name)
             result = f"工具执行出错({name}): {e}"
+            status = "failed"
+        else:
+            status = "completed"
         tool_messages.append(
             ToolMessage(
                 content=str(result),
                 tool_call_id=tc_id,
             )
         )
+        executed[tc_id] = ToolExecutionRecord(
+            tool_call_id=tc_id,
+            tool_name=name,
+            status=status,
+            result=result,
+        )
 
+    updates["executed_calls"] = executed
     return updates
+
+
+def _prepare_interaction_node(state: AgentState) -> dict[str, Any]:
+    """把独占工具调用转换为与 UI 无关的交互请求。"""
+    last: AIMessage = state.get("messages", [])[-1]
+    tc = (last.tool_calls or [])[0]
+    name = tc.get("name", "")
+    tc_id = tc.get("id", "")
+    args = tc.get("args") or {}
+    spec = SPEC_BY_NAME.get(name)
+
+    if spec is None or spec.execution_mode is ExecutionMode.DIRECT:
+        return {
+            "messages": [
+                ToolMessage(content=f"错误: 工具 {name} 不是交互工具", tool_call_id=tc_id)
+            ],
+            "pending_interaction": None,
+        }
+
+    if spec.execution_mode is ExecutionMode.INTERACTION:
+        try:
+            payload = spec.tool.invoke(args)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("构造交互请求失败: %s", name)
+            return {
+                "messages": [
+                    ToolMessage(
+                        content=f"工具执行出错({name}): {e}",
+                        tool_call_id=tc_id,
+                    )
+                ],
+                "pending_interaction": None,
+            }
+        raw = dict(payload) if isinstance(payload, Mapping) else {"question": str(payload)}
+        fields = raw.get("fields") or []
+        kind = "form" if fields else "question"
+        request = InteractionRequest(
+            request_id=f"interaction-{tc_id}",
+            tool_call_id=tc_id,
+            tool_name=name,
+            kind=kind,
+            title=str(raw.get("title", "信息采集")),
+            description=str(raw.get("description", "")),
+            question=str(raw.get("question", "")),
+            fields=fields,
+            options=raw.get("options") or [],
+            tool_args=args,
+        )
+    else:
+        request = InteractionRequest(
+            request_id=f"confirmation-{tc_id}",
+            tool_call_id=tc_id,
+            tool_name=name,
+            kind="confirmation",
+            title=spec.confirmation_title or f"确认执行 {name}",
+            description="该操作会修改文档，请确认是否继续。",
+            question=f"确认执行工具 {name}？",
+            options=["确认", "取消"],
+            tool_args=args,
+        )
+    return {"pending_interaction": request}
+
+
+def _normalize_interaction_answer(answer: Any) -> dict[str, Any]:
+    if isinstance(answer, Mapping):
+        if "answers" in answer and isinstance(answer["answers"], Mapping):
+            return dict(answer["answers"])
+        if "value" in answer and len(answer) <= 3:
+            value = str(answer.get("value", "")).strip()
+            return {"value": value} if value else {}
+        return dict(answer)
+    if isinstance(answer, str) and answer.strip():
+        return {"value": answer.strip()}
+    return {}
+
+
+def _answer_is_accepted(answer: Any) -> bool:
+    if isinstance(answer, Mapping) and "accepted" in answer:
+        return bool(answer["accepted"])
+    if isinstance(answer, bool):
+        return answer
+    value = str(answer.get("value", "") if isinstance(answer, Mapping) else answer)
+    return value.strip().lower() in {"确认", "是", "同意", "继续", "yes", "y", "ok", "true"}
+
+
+def _interaction_node(state: AgentState) -> dict[str, Any]:
+    """挂起等待交互；恢复后回传 ToolMessage，确认型工具才在确认后执行。"""
+    request = state.get("pending_interaction")
+    if not request:
+        return {}
+
+    tc_id = request.get("tool_call_id", "")
+    name = request.get("tool_name", "")
+    executed = dict(state.get("executed_calls", {}))
+    if tc_id in executed:
+        record = executed[tc_id]
+        return {
+            "messages": [
+                ToolMessage(content=str(record.get("result", "")), tool_call_id=tc_id)
+            ],
+            "pending_interaction": None,
+        }
+
+    answer = interrupt(dict(request))
+    status: str = "completed"
+
+    if request.get("kind") == "confirmation":
+        if not _answer_is_accepted(answer):
+            status = "cancelled"
+            result: Any = {
+                "ok": False,
+                "code": "user_cancelled",
+                "message": f"用户取消执行 {name}",
+                "data": None,
+                "retryable": False,
+            }
+        else:
+            tool = TOOL_BY_NAME.get(name)
+            try:
+                value = tool.invoke(request.get("tool_args") or {}) if tool else None
+                result = {
+                    "ok": tool is not None,
+                    "code": "ok" if tool is not None else "unknown_tool",
+                    "message": str(value) if tool is not None else f"未知工具 {name}",
+                    "data": value,
+                    "retryable": False,
+                }
+            except Exception as e:  # noqa: BLE001
+                logger.exception("确认工具 %s 执行失败", name)
+                status = "failed"
+                result = {
+                    "ok": False,
+                    "code": "tool_error",
+                    "message": str(e),
+                    "data": None,
+                    "retryable": True,
+                }
+    else:
+        result = {
+            "ok": True,
+            "code": "interaction_completed",
+            "message": "已收到用户输入",
+            "data": _normalize_interaction_answer(answer),
+            "retryable": False,
+        }
+
+    content = json.dumps(result, ensure_ascii=False, default=str)
+    executed[tc_id] = ToolExecutionRecord(
+        tool_call_id=tc_id,
+        tool_name=name,
+        status=status,  # type: ignore[typeddict-item]
+        result=content,
+    )
+    return {
+        "messages": [ToolMessage(content=content, tool_call_id=tc_id)],
+        "pending_interaction": None,
+        "executed_calls": executed,
+    }
+
+
+def _route_after_prepare_interaction(state: AgentState) -> str:
+    return "interaction" if state.get("pending_interaction") else "agent"
 
 
 def _route_after_tools(state: AgentState) -> str:
@@ -258,9 +440,10 @@ def _route_after_tools(state: AgentState) -> str:
 
 
 def _route_after_agent(state: AgentState) -> str:
-    """agent 之后的路由: tools / nudge / END。
+    """agent 之后的路由: tools / prepare_interaction / nudge / END。
 
-    - 有 tool_calls → tools（正常路径）
+    - 单个交互/确认工具 → prepare_interaction
+    - 普通工具或混合批次 → tools（混合批次由 tools 节点完整配对并拒绝）
     - AIMessage 有内容但【无 tool_calls】且未连续空转过多次 → nudge（纠偏重试）。
       覆盖 LLM"光说不练"（只描述意图、不发工具调用）导致首轮直接判死的失败模式。
     - 其它（无消息 / 非 AIMessage / 纯空串 / 已达 _MAX_NUDGE 上限）→ END。
@@ -270,6 +453,10 @@ def _route_after_agent(state: AgentState) -> str:
         return END
     last = messages[-1]
     if isinstance(last, AIMessage) and last.tool_calls:
+        if len(last.tool_calls) == 1:
+            spec = SPEC_BY_NAME.get(last.tool_calls[0].get("name", ""))
+            if spec is not None and spec.execution_mode is not ExecutionMode.DIRECT:
+                return "prepare_interaction"
         return "tools"
     # AIMessage 但无 tool_calls：有实质内容且未达空转上限 → 纠偏重试
     if (
@@ -310,13 +497,28 @@ def build_graph(
         ),
     )
     builder.add_node("tools", _tools_node)
+    builder.add_node("prepare_interaction", _prepare_interaction_node)
+    builder.add_node("interaction", _interaction_node)
     builder.add_node("nudge", _nudge_node)
 
     builder.add_edge(START, "agent")
     builder.add_conditional_edges(
-        "agent", _route_after_agent, {"tools": "tools", "nudge": "nudge", END: END}
+        "agent",
+        _route_after_agent,
+        {
+            "tools": "tools",
+            "prepare_interaction": "prepare_interaction",
+            "nudge": "nudge",
+            END: END,
+        },
     )
     builder.add_conditional_edges("tools", _route_after_tools, {"agent": "agent", END: END})
+    builder.add_conditional_edges(
+        "prepare_interaction",
+        _route_after_prepare_interaction,
+        {"interaction": "interaction", "agent": "agent"},
+    )
+    builder.add_edge("interaction", "agent")
     # nudge 注入纠偏提示后回 agent 重试
     builder.add_edge("nudge", "agent")
 
