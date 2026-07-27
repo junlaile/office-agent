@@ -12,13 +12,14 @@
 [文档类型推断]（关键词 → .docx/.xlsx/.pptx，拿不准问用户）
    ↓
 [agent 节点] ←──────┐
-  DeepSeek + bind_tools(49 个工具)
+  DeepSeek + bind_tools(按会话类型裁剪的工具子集：通用+格式专属+控制)
   系统提示词按文档类型走对应分支（Word/Excel/PPTX）
   自主决定调哪个工具
   节点边界注入忙时用户补充 / 强制打断
    ↓
 [tools 节点] ──→ 执行(officecli subprocess / interrupt / finish)
   _tool() 工厂按扩展名路由到 DocTool/ExcelTool/PptxTool
+  连续"末尾追加"类调用合并为一次 officecli batch（失败原子回滚+回退逐个）
   ToolMessage 回传
    ↓ (路由)
   还有 tool_calls → 回 agent
@@ -32,7 +33,9 @@
 
 ## 工具集（49 个）
 
-LLM 可自主调用以下工具（无需传文件路径，由会话注入）。文档类型决定哪些工具可用：
+LLM 可自主调用以下工具（无需传文件路径，由会话注入）。文档类型决定哪些工具可用——
+每个会话只把"通用 + 对应格式专属 + 控制"的子集 `bind_tools` 给 LLM（`tools_for_kind`），
+`query_vehicle` 仅在需求与车辆/交通相关时附加：
 
 ### 通用工具（三格式共用，6 个）
 

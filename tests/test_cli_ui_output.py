@@ -96,9 +96,11 @@ class TestPrintToolResults:
 
 
 class TestCheckOfficecli:
-    def test_returns_true_when_resolvable(self):
-        """能解析到 officecli.exe 时返回 True。"""
-        # 项目内 bin/officecli.exe 存在
+    def test_returns_true_when_resolvable(self, monkeypatch):
+        """能解析到 officecli 时返回 True（mock resolve_bin，不依赖本地二进制）。"""
+        from office_agent.cli import ui as ui_mod
+
+        monkeypatch.setattr(ui_mod, "resolve_bin", lambda: "/fake/officecli")
         assert _check_officecli() is True
 
     def test_returns_false_when_missing(self, monkeypatch, capsys):
