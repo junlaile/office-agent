@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal, cast
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -49,7 +49,7 @@ from office_agent.tools import (
 
 from .llm import get_llm
 from .prompts import build_system_prompt
-from .state import AgentState, InteractionRequest, ToolExecutionRecord
+from .state import AgentState, InteractionField, InteractionRequest, ToolExecutionRecord
 
 logger = logging.getLogger(__name__)
 
@@ -175,13 +175,14 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
     exclusive_names = {
         spec.name
         for tc in tool_calls
-        if (spec := SPEC_BY_NAME.get(tc.get("name", ""))) is not None and not spec.can_batch
+        if (spec := SPEC_BY_NAME.get(str(tc.get("name") or ""))) is not None
+        and not spec.can_batch
     }
     if exclusive_names and len(tool_calls) > 1:
         exclusive_text = "、".join(sorted(exclusive_names))
         for tc in tool_calls:
-            name = tc.get("name", "")
-            tc_id = tc.get("id", "")
+            name = str(tc.get("name") or "")
+            tc_id = str(tc.get("id") or "")
             if name in exclusive_names:
                 content = (
                     f"本批包含必须独占执行的工具 {exclusive_text}。"
@@ -203,9 +204,9 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
         return updates
 
     for tc in tool_calls:
-        name = tc.get("name", "")
+        name = str(tc.get("name") or "")
         args = tc.get("args") or {}
-        tc_id = tc.get("id", "")
+        tc_id = str(tc.get("id") or "")
         spec = SPEC_BY_NAME.get(name)
 
         if tc_id in executed:
@@ -250,7 +251,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
         except Exception as e:  # noqa: BLE001
             logger.exception("工具 %s 执行失败", name)
             result = f"工具执行出错({name}): {e}"
-            status = "failed"
+            status: Literal["completed", "cancelled", "failed"] = "failed"
         else:
             status = "completed"
         tool_messages.append(
@@ -274,8 +275,8 @@ def _prepare_interaction_node(state: AgentState) -> dict[str, Any]:
     """把独占工具调用转换为与 UI 无关的交互请求。"""
     last: AIMessage = state.get("messages", [])[-1]
     tc = (last.tool_calls or [])[0]
-    name = tc.get("name", "")
-    tc_id = tc.get("id", "")
+    name = str(tc.get("name") or "")
+    tc_id = str(tc.get("id") or "")
     args = tc.get("args") or {}
     spec = SPEC_BY_NAME.get(name)
 
@@ -302,8 +303,14 @@ def _prepare_interaction_node(state: AgentState) -> dict[str, Any]:
                 "pending_interaction": None,
             }
         raw = dict(payload) if isinstance(payload, Mapping) else {"question": str(payload)}
-        fields = raw.get("fields") or []
-        kind = "form" if fields else "question"
+        raw_fields = raw.get("fields")
+        fields = cast(
+            list[InteractionField],
+            raw_fields if isinstance(raw_fields, list) else [],
+        )
+        raw_options = raw.get("options")
+        options = cast(list[str], raw_options if isinstance(raw_options, list) else [])
+        kind: Literal["form", "question", "confirmation"] = "form" if fields else "question"
         request = InteractionRequest(
             request_id=f"interaction-{tc_id}",
             tool_call_id=tc_id,
@@ -313,7 +320,7 @@ def _prepare_interaction_node(state: AgentState) -> dict[str, Any]:
             description=str(raw.get("description", "")),
             question=str(raw.get("question", "")),
             fields=fields,
-            options=raw.get("options") or [],
+            options=options,
             tool_args=args,
         )
     else:
@@ -372,7 +379,7 @@ def _interaction_node(state: AgentState) -> dict[str, Any]:
         }
 
     answer = interrupt(dict(request))
-    status: str = "completed"
+    status: Literal["completed", "cancelled", "failed"] = "completed"
 
     if request.get("kind") == "confirmation":
         if not _answer_is_accepted(answer):
@@ -418,7 +425,7 @@ def _interaction_node(state: AgentState) -> dict[str, Any]:
     executed[tc_id] = ToolExecutionRecord(
         tool_call_id=tc_id,
         tool_name=name,
-        status=status,  # type: ignore[typeddict-item]
+        status=status,
         result=content,
     )
     return {
@@ -454,7 +461,7 @@ def _route_after_agent(state: AgentState) -> str:
     last = messages[-1]
     if isinstance(last, AIMessage) and last.tool_calls:
         if len(last.tool_calls) == 1:
-            spec = SPEC_BY_NAME.get(last.tool_calls[0].get("name", ""))
+            spec = SPEC_BY_NAME.get(str(last.tool_calls[0].get("name") or ""))
             if spec is not None and spec.execution_mode is not ExecutionMode.DIRECT:
                 return "prepare_interaction"
         return "tools"
