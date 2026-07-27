@@ -185,7 +185,7 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
             if name in exclusive_names:
                 content = (
                     f"本批包含必须独占执行的工具 {exclusive_text}。"
-                    f"请在下一次回复里只调用 {name}，不要附带其他工具。"
+                    f"请在下一次回复里单独调用 {name}，不要附带其他工具。"
                 )
             else:
                 content = (
