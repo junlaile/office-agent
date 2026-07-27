@@ -201,12 +201,22 @@ class ExcelTool:
         try:
             self.batch(ops)
         except OfficeCLIError:
-            # 兜底：逐单元格写，单个失败不阻断其余
+            # 兜底：逐单元格写，单个失败不阻断其余，但汇总告警避免假成功
+            failed: list[str] = []
             for op in ops:
                 try:
                     self.batch([op])
-                except OfficeCLIError:
-                    pass
+                except OfficeCLIError as e:
+                    path = str(op.get("path") or "?")
+                    failed.append(path)
+                    logger.warning("Excel 单元格写入失败 path=%s: %s", path, e)
+            if failed:
+                sample = ", ".join(failed[:5])
+                more = f" 等共 {len(failed)} 处" if len(failed) > 5 else f"（{len(failed)} 处）"
+                return (
+                    f"已写入 {len(rows)} 行 × {cols} 列（起始 {start_ref}）"
+                    f"（警告: {len(failed)} 个单元格写入失败: {sample}{more}）"
+                )
         return f"已写入 {len(rows)} 行 × {cols} 列（起始 {start_ref}）"
 
     def set_formula(self, sheet: str, ref: str, formula: str) -> str:

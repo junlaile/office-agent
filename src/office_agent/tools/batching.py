@@ -31,6 +31,25 @@ from .session import session_doc_kind, session_doc_path
 
 logger = logging.getLogger(__name__)
 
+# 最近一次 batch 失败原因；graph 回退后读取并标注到 ToolMessage，随后清空。
+_LAST_BATCH_FALLBACK_REASON: str | None = None
+
+BATCH_FALLBACK_PREFIX = "[batch-fallback]"
+
+
+def take_batch_fallback_reason() -> str | None:
+    """取出并清空最近一次 batch 失败原因（供 graph 回退标注用）。"""
+    global _LAST_BATCH_FALLBACK_REASON
+    reason = _LAST_BATCH_FALLBACK_REASON
+    _LAST_BATCH_FALLBACK_REASON = None
+    return reason
+
+
+def _set_batch_fallback_reason(reason: str) -> None:
+    global _LAST_BATCH_FALLBACK_REASON
+    _LAST_BATCH_FALLBACK_REASON = reason
+
+
 # 与 tools/pptx.py add_slide 的"只有标题没正文"警告保持一致的口径
 _SLIDE_NO_BODY_WARNING = (
     "⚠️ 本页只有标题没有正文（body_text 为空）。"
@@ -115,6 +134,10 @@ def execute_batched(tool_calls: list[dict]) -> list[tuple[str, str]] | None:
     content 是给 LLM 的 ToolMessage 文案）；不可合并或 batch 失败返回 None，
     由调用方回退逐个执行（batch 原子回滚，不会残留半截内容）。
     """
+    # 每次尝试前清空，避免上一次未消费的原因污染本次成功路径
+    global _LAST_BATCH_FALLBACK_REASON
+    _LAST_BATCH_FALLBACK_REASON = None
+
     if len(tool_calls) < 2:
         return None
     try:
@@ -139,7 +162,15 @@ def execute_batched(tool_calls: list[dict]) -> list[tuple[str, str]] | None:
     try:
         raw = get_runner().run(["batch", doc_path, "--commands", payload, "--json"])
     except OfficeCLIError as e:
-        logger.info("batch 合并执行失败，回退逐个执行: %s", e)
+        # 保留回退能力，但把失败原因留给 graph 标注到 ToolMessage，
+        # 避免"最终成功"掩盖中间 batch 失败。
+        _set_batch_fallback_reason(str(e))
+        logger.warning(
+            "batch 合并执行失败（%d 个 %s 写调用），将回退逐个执行: %s",
+            len(ops),
+            kind,
+            e,
+        )
         return None
 
     outputs = _parse_batch_outputs(raw)

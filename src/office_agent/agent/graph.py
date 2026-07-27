@@ -39,7 +39,12 @@ from office_agent.cli.user_input import (
 from office_agent.config import settings
 from office_agent.domain.format import kind_from_path
 from office_agent.tools import TOOL_BY_NAME, tools_for_kind
-from office_agent.tools.batching import execute_batched, is_batchable
+from office_agent.tools.batching import (
+    BATCH_FALLBACK_PREFIX,
+    execute_batched,
+    is_batchable,
+    take_batch_fallback_reason,
+)
 
 from .llm import get_llm
 from .prompts import build_system_prompt
@@ -275,8 +280,20 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
             for tc_id, content in batch_results:
                 tool_messages.append(ToolMessage(content=content, tool_call_id=tc_id))
         else:
+            # batch 失败（或不可合并）→ 逐个执行；若确有 batch 失败原因，标注首条结果
+            fallback_reason = take_batch_fallback_reason()
+            start = len(tool_messages)
             for tc in pending_batch:
                 _exec_single(tc)
+            if fallback_reason and len(tool_messages) > start:
+                first = tool_messages[start]
+                tool_messages[start] = ToolMessage(
+                    content=(
+                        f"{BATCH_FALLBACK_PREFIX} 批量写入失败已回退为逐条执行"
+                        f"（{fallback_reason}）\n{first.content}"
+                    ),
+                    tool_call_id=first.tool_call_id,
+                )
         pending_batch.clear()
 
     for tc in tool_calls:

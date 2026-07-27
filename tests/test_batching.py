@@ -206,6 +206,7 @@ class TestToolsNodeCoalescing:
 
     def test_batch_failure_falls_back_to_singles(self, doc_session, monkeypatch):
         from office_agent.office import runner as runner_module
+        from office_agent.tools.batching import BATCH_FALLBACK_PREFIX
         from tests.conftest import FakeRunner
 
         fake = FakeRunner(error_on="batch")
@@ -222,6 +223,11 @@ class TestToolsNodeCoalescing:
         assert [m.tool_call_id for m in msgs] == ["1", "2"]
         # batch 失败后回退：逐个 add 成功
         assert len(fake.calls_of("add")) == 2
+        # 首条结果应带 batch-fallback 可观测标记，避免“偶发失败却最终成功”被静默
+        assert BATCH_FALLBACK_PREFIX in msgs[0].content
+        assert "回退" in msgs[0].content
+        # 第二条不必重复前缀
+        assert BATCH_FALLBACK_PREFIX not in msgs[1].content
 
     def test_finish_after_adds(self, fake_runner, doc_session):
         """add × 2 + finish：add 合并，finish 正常短路。"""

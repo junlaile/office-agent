@@ -42,6 +42,51 @@ class OfficeCLIError(RuntimeError):
         self.stderr = stderr
 
 
+# .NET / 上游发布包常见缺依赖信号（保守匹配，不覆盖原始 stderr）
+_DOTNET_ASSEMBLY_MARKERS = (
+    "system.private.",
+    "could not load file or assembly",
+    "hostfxr",
+    "microsoft.netcore",
+    "framework 'microsoft.netcore.app'",
+)
+
+_DOTNET_HINT = (
+    "疑似 officecli 缺少 .NET 运行时依赖，或下载到的发布包不完整"
+    "（例如 System.Private.Xml）。请检查：\n"
+    "  1) 运行 `python scripts/fetch_officecli.py` 重新下载二进制；\n"
+    "  2) 执行 `officecli --version` 验证能否启动；\n"
+    "  3) Windows 上确认已安装匹配的 .NET Desktop Runtime；\n"
+    "  4) 必要时切换到已知可用的 OfficeCLI release，或设置 OFFICECLI_BIN。"
+)
+
+
+def classify_officecli_stderr(stderr: str | None) -> str | None:
+    """根据 stderr 粗分 officecli 失败原因。
+
+    返回可选的排障提示文案；无法识别时返回 None（调用方保留原错误）。
+    """
+    text = (stderr or "").strip()
+    if not text:
+        return None
+    lower = text.lower()
+    if any(m in lower for m in _DOTNET_ASSEMBLY_MARKERS):
+        return _DOTNET_HINT
+    # FileNotFoundException alone 常见于普通文件缺失；仅在带程序集元数据时判定
+    if "filenotfoundexception" in lower and (
+        "version=" in lower or "publickeytoken" in lower or "culture=neutral" in lower
+    ):
+        return _DOTNET_HINT
+    return None
+
+
+def _format_failed_cmd(args: list[str], *, limit: int = 8) -> str:
+    """截断展示失败命令，避免超长 --commands JSON 刷屏。"""
+    shown = args[:limit]
+    suffix = "..." if len(args) > limit else ""
+    return " ".join(shown) + suffix
+
+
 def resolve_bin() -> str:
     """按优先级解析 officecli 可执行文件路径。
 
@@ -111,27 +156,39 @@ class _Runner:
             )
         except FileNotFoundError as e:
             logger.debug("officecli 可执行文件不存在: %s", cmd[0])
-            raise OfficeCLIError(f"无法执行 officecli: {e}", cmd=cmd) from e
+            raise OfficeCLIError(
+                f"找不到 officecli 可执行文件，无法启动: {e}\n"
+                "请执行 `python scripts/fetch_officecli.py`，"
+                "或在 .env 中设置 OFFICECLI_BIN。",
+                cmd=cmd,
+            ) from e
         except subprocess.TimeoutExpired as e:
             logger.debug("officecli 命令超时（%ss）: %s", e.timeout, args[:3])
             raise OfficeCLIError(
-                f"officecli 命令超时（{e.timeout}s）: {' '.join(args[:3])}...",
+                f"officecli 命令超时（{e.timeout}s）: {_format_failed_cmd(args)}",
                 cmd=cmd,
             ) from e
 
         if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
             logger.debug(
                 "officecli 命令失败 returncode=%s, cmd=%s, stderr=%s",
                 proc.returncode,
-                args[:4],
-                proc.stderr.strip(),
+                args[:8],
+                stderr,
             )
+            hint = classify_officecli_stderr(stderr)
+            message = (
+                f"officecli 返回非零状态 {proc.returncode}: {_format_failed_cmd(args)}\n"
+                f"stderr: {stderr}"
+            )
+            if hint:
+                message = f"{message}\n诊断: {hint}"
             raise OfficeCLIError(
-                f"officecli 返回非零状态 {proc.returncode}: {' '.join(args[:4])}\n"
-                f"stderr: {proc.stderr.strip()}",
+                message,
                 cmd=cmd,
                 returncode=proc.returncode,
-                stderr=proc.stderr.strip(),
+                stderr=stderr,
             )
 
         logger.debug("officecli ok: %s", args[:4])
