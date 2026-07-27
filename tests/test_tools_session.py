@@ -68,6 +68,41 @@ class TestWrongKindGuards:
         result = TOOL_BY_NAME["set_cell"].invoke({"sheet": "S", "ref": "A1", "value": "x"})
         assert "xlsx" in result.lower() or "XLSX" in result
 
+    def test_add_table_in_xlsx_redirects_to_set_cells(self, xlsx_session):
+        """Excel 会话下 add_table 引导改用 set_cells（历史版本会 AttributeError）。"""
+        result = TOOL_BY_NAME["add_table"].invoke({"data": [["a", "b"], ["1", "2"]]})
+        assert "set_cells" in result
+
+
+class TestTypedAccessors:
+    """doc_tool/excel_tool/pptx_tool：类型化访问器的运行时校验。"""
+
+    def test_doc_tool_in_docx(self, doc_session):
+        from office_agent.office.doc import DocTool
+        from office_agent.tools.session import doc_tool
+
+        assert isinstance(doc_tool(), DocTool)
+
+    def test_doc_tool_in_xlsx_raises(self, xlsx_session):
+        from office_agent.office.runner import OfficeCLIError
+        from office_agent.tools.session import doc_tool
+
+        with pytest.raises(OfficeCLIError):
+            doc_tool()
+
+    def test_excel_tool_in_pptx_raises(self, pptx_session):
+        from office_agent.office.runner import OfficeCLIError
+        from office_agent.tools.session import excel_tool
+
+        with pytest.raises(OfficeCLIError):
+            excel_tool()
+
+    def test_pptx_tool_in_pptx(self, pptx_session):
+        from office_agent.office.pptx import PptxTool
+        from office_agent.tools.session import pptx_tool
+
+        assert isinstance(pptx_tool(), PptxTool)
+
 
 # ============================================================
 # start_from_template 编排（mock merge + 校验）

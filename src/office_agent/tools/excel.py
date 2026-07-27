@@ -11,8 +11,8 @@ from office_agent.officecli import (
     OfficeCLIError,
 )
 from office_agent.tools.session import (
-    _tool,
     _wrong_kind_msg,
+    excel_tool,
     session_doc_kind,
 )
 
@@ -34,7 +34,7 @@ def add_sheet(name: str, tab_color: str = "") -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("add_sheet", "xlsx", "docx 用 add_table；pptx 无工作表概念")
     try:
-        return _tool().add_sheet(name, tab_color=tab_color)  # type: ignore[union-attr]
+        return excel_tool().add_sheet(name, tab_color=tab_color)
     except OfficeCLIError as e:
         return f"添加工作表失败: {e}"
 
@@ -65,7 +65,7 @@ def set_cell(
             "set_cell", "xlsx", "docx 用 add_table/add_paragraph；pptx 用 add_textbox"
         )
     try:
-        return _tool().set_cell(  # type: ignore[union-attr]
+        return excel_tool().set_cell(
             sheet,
             ref,
             value,
@@ -94,10 +94,10 @@ def set_cells(sheet: str, data: list[list], start: str = "A1", has_header: bool 
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("set_cells", "xlsx", "docx 用 add_table；pptx 用 add_slide_table")
     try:
-        return _tool().set_cells(
+        return excel_tool().set_cells(
             sheet,
             data,
-            start_ref=start,  # type: ignore[union-attr]
+            start_ref=start,
             has_header=has_header,
         )
     except OfficeCLIError as e:
@@ -118,7 +118,7 @@ def set_formula(sheet: str, ref: str, formula: str) -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("set_formula", "xlsx", "公式只在 Excel 表格中可用")
     try:
-        return _tool().set_formula(sheet, ref, formula)  # type: ignore[union-attr]
+        return excel_tool().set_formula(sheet, ref, formula)
     except OfficeCLIError as e:
         return f"写公式失败: {e}"
 
@@ -158,7 +158,7 @@ def add_excel_chart(
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("add_excel_chart", "xlsx", "docx/pptx 的图表暂不支持数据区域引用")
     try:
-        return _tool().add_chart(  # type: ignore[union-attr]
+        return excel_tool().add_chart(
             sheet,
             chart_type,
             data_range,
@@ -187,7 +187,7 @@ def sort_sheet(sheet: str, keys: str, has_header: bool = True) -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("sort_sheet", "xlsx", "排序只在 Excel 中可用")
     try:
-        return _tool().sort(sheet, keys, has_header=has_header)  # type: ignore[union-attr]
+        return excel_tool().sort(sheet, keys, has_header=has_header)
     except OfficeCLIError as e:
         return f"排序失败: {e}"
 
@@ -203,7 +203,7 @@ def set_autofilter(sheet: str, cell_range: str = "") -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("set_autofilter", "xlsx", "自动筛选只在 Excel 中可用")
     try:
-        return _tool().set_autofilter(sheet, cell_range)  # type: ignore[union-attr]
+        return excel_tool().set_autofilter(sheet, cell_range)
     except OfficeCLIError as e:
         return f"开启筛选失败: {e}"
 
@@ -234,7 +234,7 @@ def highlight_cells(
             props["value2"] = v2.strip()
         else:
             props["value"] = value
-        return _tool().add_conditional_format(  # type: ignore[union-attr]
+        return excel_tool().add_conditional_format(
             sheet,
             "cellIs",
             cell_range,
@@ -264,7 +264,7 @@ def add_color_scale(
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("add_color_scale", "xlsx", "条件格式只在 Excel 中可用")
     try:
-        return _tool().add_conditional_format(  # type: ignore[union-attr]
+        return excel_tool().add_conditional_format(
             sheet,
             "colorScale",
             cell_range,
@@ -288,7 +288,7 @@ def add_data_bar(sheet: str, cell_range: str, color: str = "638EC6") -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("add_data_bar", "xlsx", "条件格式只在 Excel 中可用")
     try:
-        return _tool().add_conditional_format(  # type: ignore[union-attr]
+        return excel_tool().add_conditional_format(
             sheet,
             "dataBar",
             cell_range,
@@ -326,7 +326,7 @@ def add_pivot_table(
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("add_pivot_table", "xlsx", "透视表只在 Excel 中可用")
     try:
-        return _tool().add_pivot_table(  # type: ignore[union-attr]
+        return excel_tool().add_pivot_table(
             sheet,
             source,
             rows=rows,
@@ -357,7 +357,7 @@ def add_list_table(
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("add_list_table", "xlsx", "Excel 表格只在 Excel 中可用")
     try:
-        return _tool().add_list_table(  # type: ignore[union-attr]
+        return excel_tool().add_list_table(
             sheet,
             cell_range,
             style=style,
@@ -379,7 +379,7 @@ def add_dropdown(sheet: str, cell_range: str, options: str) -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("add_dropdown", "xlsx", "下拉列表只在 Excel 中可用")
     try:
-        return _tool().add_validation(  # type: ignore[union-attr]
+        return excel_tool().add_validation(
             sheet,
             cell_range,
             "list",
@@ -396,7 +396,7 @@ def merge_cells(sheet: str, cell_range: str) -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("merge_cells", "xlsx", "合并单元格只在 Excel 中可用")
     try:
-        return _tool().merge_cells(sheet, cell_range)  # type: ignore[union-attr]
+        return excel_tool().merge_cells(sheet, cell_range)
     except OfficeCLIError as e:
         return f"合并单元格失败: {e}"
 
@@ -413,7 +413,7 @@ def set_column_width(sheet: str, col: str, width: float) -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("set_column_width", "xlsx", "列宽只在 Excel 中可设")
     try:
-        return _tool().set_column_width(sheet, col, width)  # type: ignore[union-attr]
+        return excel_tool().set_column_width(sheet, col, width)
     except OfficeCLIError as e:
         return f"设置列宽失败: {e}"
 
@@ -429,7 +429,7 @@ def autofit_column(sheet: str, col: str) -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("autofit_column", "xlsx", "自动列宽只在 Excel 中可用")
     try:
-        return _tool().autofit_column(sheet, col)  # type: ignore[union-attr]
+        return excel_tool().autofit_column(sheet, col)
     except OfficeCLIError as e:
         return f"自动列宽失败: {e}"
 
@@ -440,7 +440,7 @@ def rename_sheet(old_name: str, new_name: str) -> str:
     if session_doc_kind() != "xlsx":
         return _wrong_kind_msg("rename_sheet", "xlsx", "工作表只在 Excel 中有")
     try:
-        return _tool().rename_sheet(old_name, new_name)  # type: ignore[union-attr]
+        return excel_tool().rename_sheet(old_name, new_name)
     except OfficeCLIError as e:
         return f"重命名失败: {e}"
 

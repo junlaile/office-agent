@@ -89,6 +89,9 @@ from .session import (
     _doc,
     _tool,
     _wrong_kind_msg,
+    doc_tool,
+    excel_tool,
+    pptx_tool,
     session_doc_kind,
     session_doc_path,
     set_session_doc,
@@ -100,7 +103,6 @@ from .session import (
 # 三格式共用
 _COMMON_TOOLS = [
     create_doc,
-    add_table,
     view_text,
     validate_doc,
     set_doc_properties,
@@ -112,6 +114,7 @@ _CONTROL_TOOLS = [
 ]
 _WORD_ONLY = [
     start_from_template,
+    add_table,
     add_image,
     add_title,
     add_heading,
@@ -149,6 +152,7 @@ _EXCEL_ONLY = [
     rename_sheet,
 ]
 _PPTX_ONLY = [
+    add_table,
     add_image,
     add_slide,
     add_textbox,
@@ -255,6 +259,9 @@ __all__ = [
     "session_doc_kind",
     "_tool",
     "_doc",
+    "doc_tool",
+    "excel_tool",
+    "pptx_tool",
     "_wrong_kind_msg",
     # 聚合
     "ALL_TOOLS",

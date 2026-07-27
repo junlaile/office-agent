@@ -72,9 +72,39 @@ def _tool() -> DocTool | ExcelTool | PptxTool:
     return DocTool(path)
 
 
+def doc_tool() -> DocTool:
+    """当前会话的 DocTool（类型化访问器，供 kind 守卫后的 Word 工具用）。
+
+    与 ``_tool()`` 的区别：返回具体类型而非三类联合，调用方法不再需要
+    ``# type: ignore[union-attr]``；万一守卫遗漏，isinstance 检查兜底报错。
+    """
+    t = _tool()
+    if not isinstance(t, DocTool):
+        raise OfficeCLIError(f"当前会话不是 Word 文档（{session_doc_kind()}），无法执行 Word 操作")
+    return t
+
+
+def excel_tool() -> ExcelTool:
+    """当前会话的 ExcelTool（类型化访问器，供 kind 守卫后的 Excel 工具用）。"""
+    t = _tool()
+    if not isinstance(t, ExcelTool):
+        raise OfficeCLIError(f"当前会话不是 Excel 表格（{session_doc_kind()}），无法执行 Excel 操作")
+    return t
+
+
+def pptx_tool() -> PptxTool:
+    """当前会话的 PptxTool（类型化访问器，供 kind 守卫后的 PPT 工具用）。"""
+    t = _tool()
+    if not isinstance(t, PptxTool):
+        raise OfficeCLIError(
+            f"当前会话不是 PowerPoint 演示（{session_doc_kind()}），无法执行 PPT 操作"
+        )
+    return t
+
+
 def _doc() -> DocTool:
     """向后兼容：旧代码可能引用 _doc()。"""
-    return _tool()  # type: ignore[return-value]
+    return doc_tool()
 
 
 def _wrong_kind_msg(tool_name: str, expected: str, hint: str = "") -> str:

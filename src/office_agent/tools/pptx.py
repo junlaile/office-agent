@@ -8,12 +8,11 @@ from langchain_core.tools import tool
 
 from office_agent.officecli import (
     OfficeCLIError,
-    PptxTool,
 )
 from office_agent.tools.common import _validate_image_source
 from office_agent.tools.session import (
-    _tool,
     _wrong_kind_msg,
+    pptx_tool,
     session_doc_kind,
 )
 
@@ -67,7 +66,7 @@ def add_slide(title: str = "", body_text: str = "", layout: str = "") -> str:
             "【补上 body_text】写入要点内容——否则这页会是空的。\n"
         )
     try:
-        result = _tool().add_slide(title=title, text=body_text, layout=layout)  # type: ignore[union-attr]
+        result = pptx_tool().add_slide(title=title, text=body_text, layout=layout)
         return warning + result
     except OfficeCLIError as e:
         return f"添加幻灯片失败: {e}"
@@ -107,7 +106,7 @@ def add_textbox(
     if session_doc_kind() != "pptx":
         return _wrong_kind_msg("add_textbox", "pptx", "docx 用 add_paragraph；xlsx 用 set_cell")
     try:
-        pptx: PptxTool = _tool()  # type: ignore[assignment]
+        pptx = pptx_tool()
         slide_index = pptx.last_slide_index() or 1
         return pptx.add_textbox(
             slide_index,
@@ -151,7 +150,7 @@ def add_slide_image(url_or_path: str, x: str = "2cm", y: str = "2cm", width: str
             f"不要重试这张图，继续生成幻灯片其他内容。"
         )
     try:
-        pptx: PptxTool = _tool()  # type: ignore[assignment]
+        pptx = pptx_tool()
         slide_index = pptx.last_slide_index() or 1
         return pptx.add_image(slide_index, url_or_path, x=x, y=y, width=width)
     except OfficeCLIError as e:
@@ -186,7 +185,7 @@ def add_slide_table(
             clean.append([("" if c is None else str(c)) for c in row])
         if not clean:
             return "添加表格失败: 数据为空"
-        pptx: PptxTool = _tool()  # type: ignore[assignment]
+        pptx = pptx_tool()
         slide_index = pptx.last_slide_index() or 1
         return pptx.add_table(slide_index, clean, has_header=has_header, x=x, y=y, width=width)
     except OfficeCLIError as e:
@@ -219,7 +218,7 @@ def set_slide_transition(
         return _wrong_kind_msg("set_slide_transition", "pptx", "切换效果只在 PPT 中可用")
     try:
         advance_ms = int(auto_advance_seconds * 1000) if auto_advance_seconds else None
-        return _tool().set_transition(  # type: ignore[union-attr]
+        return pptx_tool().set_transition(
             slide_index,
             transition,
             advance_time_ms=advance_ms,
@@ -239,7 +238,7 @@ def set_slide_notes(slide_index: int, notes: str) -> str:
     if session_doc_kind() != "pptx":
         return _wrong_kind_msg("set_slide_notes", "pptx", "备注只在 PPT 中可用")
     try:
-        return _tool().set_notes(slide_index, notes)  # type: ignore[union-attr]
+        return pptx_tool().set_notes(slide_index, notes)
     except OfficeCLIError as e:
         return f"设置备注失败: {e}"
 
@@ -262,7 +261,7 @@ def set_theme_colors(
     if session_doc_kind() != "pptx":
         return _wrong_kind_msg("set_theme_colors", "pptx", "主题色只在 PPT 中可用")
     try:
-        return _tool().set_theme_colors(  # type: ignore[union-attr]
+        return pptx_tool().set_theme_colors(
             accent1=accent1,
             accent2=accent2,
             accent3=accent3,
@@ -285,7 +284,7 @@ def set_theme_fonts(heading_font: str = "", body_font: str = "") -> str:
     if session_doc_kind() != "pptx":
         return _wrong_kind_msg("set_theme_fonts", "pptx", "主题字体只在 PPT 中可用")
     try:
-        return _tool().set_theme_fonts(  # type: ignore[union-attr]
+        return pptx_tool().set_theme_fonts(
             heading_font=heading_font,
             body_font=body_font,
         )

@@ -14,6 +14,7 @@ class TestToolsForKind:
         names = _names(tools_for_kind("docx"))
         # 通用 + Word 专属 + 控制
         assert {"create_doc", "view_text", "add_title", "add_heading", "update_paragraph"} <= names
+        assert "add_table" in names
         assert {"ask_user", "finish"} <= names
         assert "start_from_template" in names  # 公文模板只在 Word 会话可用
         # 不含 Excel / PPT 专属
@@ -26,6 +27,7 @@ class TestToolsForKind:
         assert "add_paragraph" not in names
         assert "add_slide" not in names
         assert "add_image" not in names  # add_image 仅 Word/PPT
+        assert "add_table" not in names  # Excel 写表格用 set_cells
 
     def test_pptx_subset(self):
         names = _names(tools_for_kind("pptx"))

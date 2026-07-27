@@ -10,8 +10,8 @@ from office_agent.officecli import (
     OfficeCLIError,
 )
 from office_agent.tools.session import (
-    _tool,
     _wrong_kind_msg,
+    doc_tool,
     session_doc_kind,
 )
 
@@ -35,7 +35,7 @@ def add_title(text: str) -> str:
             f"请改用：pptx→add_slide(title=...) 或 add_textbox；"
             f"xlsx→set_cells 写表头行。"
         )
-    return _tool().add_title(text)  # type: ignore[union-attr]
+    return doc_tool().add_title(text)
 
 
 @tool
@@ -54,7 +54,7 @@ def add_heading(text: str, level: int = 1) -> str:
             f"add_heading 是 Word 专属工具，当前文档是 {kind}。"
             f"pptx 用 add_textbox 当标题；xlsx 用 set_cells 写分组行。"
         )
-    return _tool().add_heading(text, level=level)  # type: ignore[union-attr]
+    return doc_tool().add_heading(text, level=level)
 
 
 @tool
@@ -73,7 +73,7 @@ def add_paragraph(text: str, bold: bool = False, italic: bool = False) -> str:
             f"add_paragraph 是 Word 专属工具，当前文档是 {kind}。"
             f"pptx 用 add_textbox；xlsx 用 set_cell/set_cells。"
         )
-    return _tool().add_paragraph(text, bold=bold, italic=italic)  # type: ignore[union-attr]
+    return doc_tool().add_paragraph(text, bold=bold, italic=italic)
 
 
 @tool
@@ -93,7 +93,7 @@ def add_list_item(text: str, ordered: bool = False) -> str:
             f"add_list_item 是 Word 专属工具，当前文档是 {kind}。"
             f"pptx 用 add_textbox 多行；xlsx 用 set_cells。"
         )
-    return _tool().add_list_item(text, ordered=ordered)  # type: ignore[union-attr]
+    return doc_tool().add_list_item(text, ordered=ordered)
 
 
 @tool
@@ -110,7 +110,7 @@ def add_toc(levels: str = "1-3", title: str = "目录") -> str:
     if session_doc_kind() != "docx":
         return _wrong_kind_msg("add_toc", "docx", "目录只在 Word 文档中可用")
     try:
-        return _tool().add_toc(levels=levels, title=title)  # type: ignore[union-attr]
+        return doc_tool().add_toc(levels=levels, title=title)
     except OfficeCLIError as e:
         return f"添加目录失败: {e}"
 
@@ -125,7 +125,7 @@ def add_page_number(align: str = "center") -> str:
     if session_doc_kind() != "docx":
         return _wrong_kind_msg("add_page_number", "docx", "页码只在 Word 文档中可用")
     try:
-        return _tool().add_footer(field="page", align=align)  # type: ignore[union-attr]
+        return doc_tool().add_footer(field="page", align=align)
     except OfficeCLIError as e:
         return f"添加页码失败: {e}"
 
@@ -141,7 +141,7 @@ def add_header(text: str, align: str = "right") -> str:
     if session_doc_kind() != "docx":
         return _wrong_kind_msg("add_header", "docx", "页眉只在 Word 文档中可用")
     try:
-        return _tool().add_header(text, align=align)  # type: ignore[union-attr]
+        return doc_tool().add_header(text, align=align)
     except OfficeCLIError as e:
         return f"添加页眉失败: {e}"
 
@@ -157,7 +157,7 @@ def add_footer(text: str, align: str = "center") -> str:
     if session_doc_kind() != "docx":
         return _wrong_kind_msg("add_footer", "docx", "页脚只在 Word 文档中可用")
     try:
-        return _tool().add_footer(text, align=align)  # type: ignore[union-attr]
+        return doc_tool().add_footer(text, align=align)
     except OfficeCLIError as e:
         return f"添加页脚失败: {e}"
 
@@ -176,7 +176,7 @@ def add_hyperlink(text: str, url: str, tooltip: str = "") -> str:
             "add_hyperlink", "docx", "超链接只在 Word 文档中可用（pptx 用 add_slide）"
         )
     try:
-        return _tool().add_hyperlink(text, url, tooltip=tooltip)  # type: ignore[union-attr]
+        return doc_tool().add_hyperlink(text, url, tooltip=tooltip)
     except OfficeCLIError as e:
         return f"添加超链接失败: {e}"
 
@@ -197,7 +197,7 @@ def add_word_chart(chart_type: str, data: str, categories: str = "", title: str 
             "add_word_chart", "docx", "Word 图表只在 Word 文档中可用（Excel 用 add_excel_chart）"
         )
     try:
-        return _tool().add_chart(  # type: ignore[union-attr]
+        return doc_tool().add_chart(
             chart_type,
             data,
             categories=categories,
@@ -217,7 +217,7 @@ def add_section_break(orientation: str = "portrait") -> str:
     if session_doc_kind() != "docx":
         return _wrong_kind_msg("add_section_break", "docx", "分节只在 Word 文档中可用")
     try:
-        return _tool().add_section(orientation=orientation)  # type: ignore[union-attr]
+        return doc_tool().add_section(orientation=orientation)
     except OfficeCLIError as e:
         return f"添加分节失败: {e}"
 
@@ -243,7 +243,7 @@ def update_paragraph(path: str, text: str) -> str:
     if session_doc_kind() != "docx":
         return _wrong_kind_msg("update_paragraph", "docx", "Excel/PowerPoint 没有段落概念")
     try:
-        return _tool().set_paragraph_text(path, text)  # type: ignore[union-attr]
+        return doc_tool().set_paragraph_text(path, text)
     except OfficeCLIError as e:
         return f"修改段落失败: {e}"
 
@@ -275,7 +275,7 @@ def replace_text(find: str, replace: str, path: str = "") -> str:
         )
     try:
         scope = path if path else "/body"
-        return _tool().find_replace(find, replace, path=scope)  # type: ignore[union-attr]
+        return doc_tool().find_replace(find, replace, path=scope)
     except OfficeCLIError as e:
         return f"文本替换失败: {e}"
 
@@ -298,6 +298,6 @@ def remove_paragraph(path: str) -> str:
     if session_doc_kind() != "docx":
         return _wrong_kind_msg("remove_paragraph", "docx", "Excel/PowerPoint 暂不支持按路径删元素")
     try:
-        return _tool().remove(path)  # type: ignore[union-attr]
+        return doc_tool().remove(path)
     except OfficeCLIError as e:
         return f"删除段落失败: {e}"
