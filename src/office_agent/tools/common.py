@@ -19,11 +19,13 @@ from office_agent.domain.templates import (
 )
 from office_agent.officecli import (
     OfficeCLIError,
-    PptxTool,
     merge_template,
 )
 from office_agent.tools.session import (
     _tool,
+    doc_tool,
+    excel_tool,
+    pptx_tool,
     session_doc_kind,
     session_doc_path,
 )
@@ -126,7 +128,7 @@ def create_doc() -> str:
 
 @tool
 def add_table(data: list[list], has_header: bool = True) -> str:
-    """添加一个表格。适合展示对比、数据、结构化信息。三种文档类型都支持。
+    """【Word/PowerPoint 通用】添加一个表格。适合展示对比、数据、结构化信息。
 
     参数:
         data: 二维数组，外层是行、内层是单元格。每行长度应一致。
@@ -136,10 +138,18 @@ def add_table(data: list[list], has_header: bool = True) -> str:
 
     各格式行为:
         - Word: 在文档末尾插入表格。
-        - Excel: 在当前工作表末尾追加（建议优先用专门的 set_cells，可控起始位置）。
         - PowerPoint: 加到最新一张幻灯片（建议先 add_slide 再加表格）。
+        - Excel: 不要用本工具，改用 set_cells(sheet, data, start)——
+          可控工作表与起始位置，语义更明确。
     """
     kind = session_doc_kind()
+    if kind == "xlsx":
+        # ExcelTool 没有"追加表格"语义（无法可靠定位当前表/末行），
+        # 明确引导 LLM 用 set_cells（历史版本此分支会 AttributeError）。
+        return (
+            "add_table 不适用于 Excel 会话。请改用 "
+            "set_cells(sheet, data, start='A1', has_header=True) 写入表格数据。"
+        )
     try:
         clean = []
         for row in data or []:
@@ -149,14 +159,13 @@ def add_table(data: list[list], has_header: bool = True) -> str:
         if not clean:
             return "添加表格失败: 数据为空"
 
-        t = _tool()
         if kind == "pptx":
             # PptxTool.add_table 需要 slide_index，加到最新幻灯片
-            pptx: PptxTool = t  # type: ignore[assignment]
+            pptx = pptx_tool()
             slide_index = pptx.last_slide_index() or 1
             pptx.add_table(slide_index, clean, has_header=has_header)
         else:
-            t.add_table(clean, has_header=has_header)  # type: ignore[attr-defined]
+            doc_tool().add_table(clean, has_header=has_header)
         rows = len(clean)
         cols = max(len(r) for r in clean) if clean else 0
         return f"已添加 {rows} 行 × {cols} 列的表格"
@@ -314,15 +323,14 @@ def add_image(url_or_path: str, width: str = "8cm", caption: str = "") -> str:
         )
     kind = session_doc_kind()
     try:
-        t = _tool()
         if kind == "pptx":
-            pptx: PptxTool = t  # type: ignore[assignment]
+            pptx = pptx_tool()
             slide_index = pptx.last_slide_index() or 1
             return pptx.add_image(slide_index, url_or_path, width=width, alt=caption or "图片")
         # docx
-        return t.add_image(
+        return doc_tool().add_image(
             url_or_path,
-            width=width,  # type: ignore[union-attr]
+            width=width,
             alt=caption or "图片",
             caption=caption,
         )
@@ -348,16 +356,16 @@ def set_doc_properties(
         keywords: 关键词（逗号分隔）。
     """
     try:
-        t = _tool()
         kind = session_doc_kind()
         if kind == "pptx":
-            return t.set_presentation_props(  # type: ignore[union-attr]
+            return pptx_tool().set_presentation_props(
                 title=title,
                 author=author,
                 subject=subject,
             )
         # docx / xlsx 都用 set on /
-        return t.set_doc_properties(  # type: ignore[union-attr]
+        t = doc_tool() if kind == "docx" else excel_tool()
+        return t.set_doc_properties(
             title=title,
             author=author,
             subject=subject,
