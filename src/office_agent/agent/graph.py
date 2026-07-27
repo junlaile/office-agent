@@ -23,8 +23,8 @@
 
 from __future__ import annotations
 
-import logging
 import json
+import logging
 from collections.abc import Mapping
 from typing import Any
 
