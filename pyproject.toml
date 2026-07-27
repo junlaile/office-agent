@@ -64,7 +64,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 # 默认只跑单测（不碰 officecli.exe 和 LLM API）。
 # 显式跑集成/LLM：uv run pytest -m integration / -m llm / -m ""（全跑）
-addopts = "-ra --strict-markers -m 'not integration and not llm' --cov=office_agent --cov-report=term-missing --cov-fail-under=65"
+addopts = "-ra --strict-markers -m 'not integration and not llm' --cov=office_agent --cov-report=term-missing --cov-fail-under=70"
 markers = [
     "integration: 真调 officecli.exe 的慢测试（默认 -m 'not integration' 跳过）",
     "llm: 真调 LLM API 的端到端测试（默认 skip）",
