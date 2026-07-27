@@ -9,7 +9,7 @@ GB/T 9704 模板到输出路径，并传 doc_type 让本模块走 _OFFICIAL_BRAN
 此时文档已含完整版头/版记/页码，agent 只需编辑正文范例文字。
 """
 
-from office_agent.domain.templates import is_upward
+from office_agent.domain.templates import format_closing_list, is_upward
 
 # 三种文档类型的标识，供 build_system_prompt 选用对应分支
 _KIND_BRANCH = {
@@ -230,14 +230,7 @@ _OFFICIAL_BRANCH = """\
 ### 公文写作规范（务必遵守）
 - 【层级序号】严格用：一、 →（一）→ 1. →（1），不跳级，不用 markdown 的 - 或 *。
 - 【结语用语】必须匹配文种:
-    通知 → "请认真贯彻执行。" / "特此通知。"
-    通报 → "特此通报。"
-    报告 → "特此报告。"（报告不带请示事项）
-    请示 → "妥否，请批示。"（一文一事，不夹带报告）
-    批复 → "此复。"
-    函   → "请予支持为盼。" / "此复。"（不相隶属机关之间）
-    公告/通告 → "特此公告。" / "特此通告。"
-    决定/决议/意见/议案/命令/公报/纪要 → 按其惯例，无固定结语。
+{closing_list}
 - 【语气】庄重、平实、严谨、简明。禁止口语、文学修辞、感叹号堆砌。
 - 【日期】成文日期用中文数字含"〇"，如"二〇二六年三月三十一日"。
 - 【发文字号】六角括号〔2026〕，如"X政发〔2026〕12号"。
@@ -353,7 +346,11 @@ def build_system_prompt(
             if is_upward(doc_type)
             else "（本文种非上行文，无签发人栏）"
         )
-        branch = _OFFICIAL_BRANCH.format(doc_type=doc_type, upward_note=upward_note)
+        branch = _OFFICIAL_BRANCH.format(
+            doc_type=doc_type,
+            upward_note=upward_note,
+            closing_list=format_closing_list(),
+        )
         # 注入已读取的模板正文（若 main.py 预读成功）
         if template_text.strip():
             branch += _TEMPLATE_CONTEXT.format(text=template_text.strip())

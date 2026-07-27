@@ -1,10 +1,12 @@
-﻿"""templates.py 单元测试：15 文种识别 + merge 数据构造。
+﻿"""templates.py 单元测试：文种识别 + merge 数据构造 + 注册表自检。
 
-全部纯函数，无外部依赖（detect_doc_type/default_merge_data/is_upward/is_meeting
-不碰文件系统；template_path 只算路径不检查存在）。
+断言都由注册表派生（不硬编码文种个数），新增文种时本文件无需改动。
+除 check_registry / template_exists 外全是纯函数，不碰文件系统。
 """
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 import pytest
 
@@ -12,8 +14,10 @@ from office_agent.domain.templates import (
     DOC_BY_NAME,
     DOC_TYPE_NAMES,
     OFFICIAL_DOCS,
+    check_registry,
     default_merge_data,
     detect_doc_type,
+    format_closing_list,
     format_doc_type_list,
     is_meeting,
     is_upward,
@@ -94,9 +98,12 @@ class TestDetectDocType:
         """大小写和空白归一化。"""
         assert detect_doc_type("  写一份  通知  ") == "通知"
 
-    def test_all_15_types_have_name(self):
-        """15 个法定文种全部注册。"""
-        expected_names = {
+    def test_core_types_registered(self):
+        """《公文处理工作条例》第八条的法定文种都在注册表里。
+
+        只点测这批法定文种（它们不会变）；新增业务文种时本测试无需改动。
+        """
+        legal_types = {
             "决议",
             "决定",
             "命令（令）",
@@ -113,13 +120,22 @@ class TestDetectDocType:
             "函",
             "纪要",
         }
-        assert set(DOC_TYPE_NAMES) == expected_names
-        assert len(OFFICIAL_DOCS) == 15
+        assert legal_types <= set(DOC_TYPE_NAMES)
 
     def test_all_types_have_keywords(self):
         """每个文种至少有一个识别关键词。"""
         for d in OFFICIAL_DOCS:
             assert d.keywords, f"{d.name} 缺关键词"
+
+    def test_every_type_detectable_by_own_keyword(self):
+        """每个文种至少有一个关键词能把自己识别出来。
+
+        新增文种若关键词被更高优先级的文种抢判（或写了个永远命中不到的词），
+        这里会失败——比"人肉检查关键词"可靠。
+        """
+        for d in OFFICIAL_DOCS:
+            hits = {detect_doc_type(kw) for kw in d.keywords}
+            assert d.name in hits, f"{d.name} 的关键词 {d.keywords} 都识别不到自己（命中 {hits}）"
 
 
 # ============================================================
@@ -211,8 +227,8 @@ class TestTemplatePath:
         assert p.name == "08-通知.docx"
         assert p.parent.name == "word"
 
-    def test_all_15_filenames(self):
-        """15 文种文件名格式正确（NN-文种.docx）。"""
+    def test_all_filenames_follow_convention(self):
+        """文件名格式正确（NN-文种.docx）。"""
         for d in OFFICIAL_DOCS:
             p = template_path(d.name)
             assert p.name == f"{d.index:02d}-{d.name}.docx"
@@ -262,22 +278,63 @@ class TestMetadata:
     """文种元数据完整性。"""
 
     def test_format_doc_type_list_contains_all(self):
-        """文种清单文本含全部 15 文种名。"""
+        """文种清单文本含全部文种名。"""
         text = format_doc_type_list()
         for d in OFFICIAL_DOCS:
             assert d.name in text
 
+    def test_format_closing_list_covers_every_type(self):
+        """结语清单（注入公文提示词）覆盖每个文种，有结语的原样列出。"""
+        text = format_closing_list()
+        for d in OFFICIAL_DOCS:
+            assert d.name in text, f"{d.name} 未出现在结语清单里"
+            if d.closing:
+                assert d.closing in text
+
     def test_doc_by_name_lookup(self):
         """DOC_BY_NAME 字典查找。"""
         assert DOC_BY_NAME["通知"].name == "通知"
-        assert DOC_BY_NAME["通知"].index == 8
 
     def test_indices_unique_and_sequential(self):
-        """15 文种 index 1-15 唯一且连续。"""
+        """index 从 1 开始连续、唯一（决定模板文件名前缀）。"""
         indices = sorted(d.index for d in OFFICIAL_DOCS)
-        assert indices == list(range(1, 16))
+        assert indices == list(range(1, len(OFFICIAL_DOCS) + 1))
+
+    def test_names_unique(self):
+        """文种名唯一（DOC_BY_NAME 靠它做 O(1) 查找）。"""
+        assert len(DOC_TYPE_NAMES) == len(set(DOC_TYPE_NAMES))
 
     def test_filenames_unique(self):
         """文件名唯一。"""
         names = [d.filename for d in OFFICIAL_DOCS]
         assert len(names) == len(set(names))
+
+
+# ============================================================
+# check_registry: 注册表 ↔ 模板文件一致性
+# ============================================================
+class TestCheckRegistry:
+    """注册表自检（新增文种漏生成模板、插队导致前缀错位等都由它兜住）。"""
+
+    def test_registry_consistent_with_template_dir(self):
+        """真实工程状态无问题。失败时问题描述自带修复指引。"""
+        problems = check_registry()
+        assert problems == [], "注册表自检未通过：\n" + "\n".join(problems)
+
+    def test_reports_missing_template_file(self, monkeypatch):
+        """注册了但模板文件不存在 → 报出来。"""
+        ghost = replace(OFFICIAL_DOCS[0], name="虚构文种", index=99)
+        monkeypatch.setattr(
+            "office_agent.domain.templates.OFFICIAL_DOCS",
+            [*OFFICIAL_DOCS, ghost],
+        )
+        problems = check_registry()
+        assert any("虚构文种" in p and "模板文件缺失" in p for p in problems)
+
+    def test_reports_orphan_template_file(self, tmp_path, monkeypatch):
+        """目录里有 .docx 但没注册 → 报出来（agent 永远用不到的死文件）。"""
+        (tmp_path / "99-孤儿.docx").write_bytes(b"")
+        monkeypatch.setattr("office_agent.domain.templates.TEMPLATE_DIR", tmp_path)
+        monkeypatch.setattr("office_agent.domain.templates.OFFICIAL_DOCS", [])
+        problems = check_registry()
+        assert any("孤儿" in p for p in problems)

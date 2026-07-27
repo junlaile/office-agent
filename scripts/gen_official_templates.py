@@ -1,28 +1,53 @@
-"""生成 GB/T 9704-2012《党政机关公文格式》Word 模板（15 个法定文种）。
+"""生成 GB/T 9704-2012《党政机关公文格式》Word 公文模板。
 
-依据《党政机关公文处理工作条例》第八条规定的法定文种：
-    决议、决定、命令（令）、公报、公告、通告、意见、通知、通报、
-    报告、请示、批复、议案、函、纪要
+文种清单、文件名前缀由 ``office_agent.domain.templates`` 的注册表决定，
+本脚本只负责每个文种的【正文范例 spec】和渲染。两边文种对不上会直接报错，
+不会悄悄生成孤儿文件。新增文种的完整步骤见《新增office模版的说明.md》。
 
 每个模板含：版头（发文机关标志/发文字号/签发人）+ 红色分隔线 + 标题 +
 主送机关 + 范例正文 + 落款 + 版记（抄送/印发）+ 页码。
 
 用法::
 
-    uv run --with python-docx python scripts/gen_official_templates.py
+    # 全量重新生成
+    uv run --no-project --with python-docx python scripts/gen_official_templates.py
+    # 只生成一个文种（改版式时快速迭代）
+    uv run --no-project --with python-docx python scripts/gen_official_templates.py --only 通知
+    # 只自检注册表与模板文件是否一致（不写文件，不需要 python-docx）
+    python scripts/gen_official_templates.py --check
 
 输出：template/word/01-决议.docx ... 15-纪要.docx
 """
 
 from __future__ import annotations
 
+import argparse
+import sys
 from pathlib import Path
 
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
+# 工程根：<root>/scripts/gen_official_templates.py
+ROOT = Path(__file__).resolve().parent.parent
+# 复用工程内的文种注册表；templates 模块只依赖标准库，
+# 因此本脚本在 `--no-project`（未安装工程依赖）环境下也能 import 它。
+sys.path.insert(0, str(ROOT / "src"))
+
+from office_agent.domain.templates import (  # noqa: E402
+    DOC_TYPE_NAMES,
+    check_registry,
+    template_path,
+)
+
+# --check 只读注册表和文件名，不渲染 docx；缺 python-docx 时推迟到真正生成时再报错。
+try:
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_TAB_ALIGNMENT
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm, Pt, RGBColor
+except ModuleNotFoundError as e:  # pragma: no cover - 取决于运行环境
+    _DOCX_MISSING: str | None = str(e)
+else:
+    _DOCX_MISSING = None
 
 # ── 字体常量（GB/T 9704）───────────────────────────────────────────────
 FANGSONG = "仿宋"  # 正文 / 主送 / 署名 / 版记
@@ -323,7 +348,9 @@ def build_doc(spec: dict) -> Document:
     return doc
 
 
-# ── 15 个文种数据 ───────────────────────────────────────────────────────
+# ── 各文种的正文范例数据 ────────────────────────────────────────────────
+# 每个文种一条 spec()，name 必须与 domain/templates.py 注册表里的文种名一致
+# （顺序无所谓，输出文件名由注册表的 index 决定）。
 # 模板默认元数据。
 # 版头/落款/版记的固定槽位用 {{key}} 占位，供 officecli merge 一次性预填：
 #   {{org}}        发文机关（版头红字 + 落款署名）
@@ -884,20 +911,81 @@ DOCUMENTS = [
 
 
 # ── 主入口 ─────────────────────────────────────────────────────────────
-def main() -> None:
-    # 项目根：脚本位于 <root>/scripts/，模板输出到 <root>/template/word/
-    root = Path(__file__).resolve().parent.parent
-    out_dir = root / "template" / "word"
-    out_dir.mkdir(parents=True, exist_ok=True)
+SPEC_BY_NAME: dict[str, dict] = {d["name"]: d for d in DOCUMENTS}
 
-    print(f"输出目录：{out_dir}")
-    for i, d in enumerate(DOCUMENTS, start=1):
-        doc = build_doc(d)
-        filename = f"{i:02d}-{d['name']}.docx"
-        path = out_dir / filename
-        doc.save(path)
-        print(f"  ✓ {filename}")
-    print(f"完成，共生成 {len(DOCUMENTS)} 个公文模板。")
+
+def check_specs() -> list[str]:
+    """校验本脚本的正文 spec 与注册表文种是否一一对应。"""
+    problems = []
+    registered = set(DOC_TYPE_NAMES)
+    for name in sorted(registered - set(SPEC_BY_NAME)):
+        problems.append(
+            f"{name}: 注册表里有，但本脚本缺正文 spec"
+            f"（在 DOCUMENTS 末尾加一条 spec('{name}', ...)）"
+        )
+    for name in sorted(set(SPEC_BY_NAME) - registered):
+        problems.append(f"{name}: 本脚本有正文 spec，但没在 domain/templates.py 的 _DEFS 里注册")
+    return problems
+
+
+def generate(names: list[str]) -> None:
+    """渲染指定文种的模板，输出路径由注册表决定。"""
+    if _DOCX_MISSING:
+        raise SystemExit(
+            f"生成模板需要 python-docx（{_DOCX_MISSING}）。\n"
+            f"请用: uv run --no-project --with python-docx python "
+            f"scripts/gen_official_templates.py"
+        )
+    for name in names:
+        path = template_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        build_doc(SPEC_BY_NAME[name]).save(path)
+        print(f"  ✓ {path.name}")
+    print(f"完成，共生成 {len(names)} 个公文模板。")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--only",
+        metavar="文种",
+        action="append",
+        help="只生成指定文种（可重复），如 --only 通知 --only 请示",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="只自检（注册表 ↔ 正文 spec ↔ 模板文件），不写文件",
+    )
+    args = parser.parse_args(argv)
+
+    problems = check_specs()
+    if args.check:
+        problems += check_registry()
+        if problems:
+            print("自检发现问题：")
+            for p in problems:
+                print(f"  ✗ {p}")
+            raise SystemExit(1)
+        print(f"自检通过：{len(DOC_TYPE_NAMES)} 个文种，注册表 / 正文 spec / 模板文件一致。")
+        return
+
+    if problems:
+        print("注册表与正文 spec 不一致，已中止生成：")
+        for p in problems:
+            print(f"  ✗ {p}")
+        raise SystemExit(1)
+
+    if args.only:
+        unknown = [n for n in args.only if n not in SPEC_BY_NAME]
+        if unknown:
+            raise SystemExit(f"未知文种 {unknown}。合法文种: {DOC_TYPE_NAMES}")
+        names = args.only
+    else:
+        names = list(DOC_TYPE_NAMES)
+
+    print(f"输出目录：{template_path(names[0]).parent}")
+    generate(names)
 
 
 if __name__ == "__main__":
