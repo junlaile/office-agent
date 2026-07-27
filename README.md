@@ -112,6 +112,21 @@ python scripts/fetch_officecli.py
 
 自动识别 Windows/Linux/macOS + x64/arm64，下载到 `bin/`，带 SHA256 校验。
 
+下载后建议先验证：
+
+```bash
+# Windows
+.\bin\officecli.exe --version
+# Linux/macOS
+./bin/officecli --version
+```
+
+若出现 `System.Private.Xml` / `Could not load file or assembly` / `FileNotFoundException`：
+多半是 **officecli 缺少匹配的 .NET 运行时**，或下载到的发布包不完整。请：
+1. 重新执行 `python scripts/fetch_officecli.py`；
+2. Windows 上安装匹配的 [.NET Desktop Runtime](https://dotnet.microsoft.com/download)；
+3. 或设置 `OFFICECLI_BIN` 指向已知可用的 OfficeCLI 版本。
+
 > 网络受限？设置代理后重试：
 > - PowerShell: `$env:HTTPS_PROXY='http://127.0.0.1:7890'`
 > - bash: `export HTTPS_PROXY=http://127.0.0.1:7890`

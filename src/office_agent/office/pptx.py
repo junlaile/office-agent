@@ -289,12 +289,22 @@ class PptxTool:
         try:
             self.batch(ops)
         except OfficeCLIError:
-            # 兜底：逐单元格
+            # 兜底：逐单元格，失败项汇总告警避免假成功
+            failed: list[str] = []
             for op in ops:
                 try:
                     self.batch([op])
-                except OfficeCLIError:
-                    pass
+                except OfficeCLIError as e:
+                    path = str(op.get("path") or "?")
+                    failed.append(path)
+                    logger.warning("PPT 表格单元格写入失败 path=%s: %s", path, e)
+            if failed:
+                sample = ", ".join(failed[:5])
+                more = f" 等共 {len(failed)} 处" if len(failed) > 5 else f"（{len(failed)} 处）"
+                return (
+                    f"已在幻灯片 {slide_index} 添加 {rows} 行 × {cols} 列的表格"
+                    f"（警告: {len(failed)} 个单元格写入失败: {sample}{more}）"
+                )
         return f"已在幻灯片 {slide_index} 添加 {rows} 行 × {cols} 列的表格"
 
     def _last_table_index(self, slide_index: int) -> int:

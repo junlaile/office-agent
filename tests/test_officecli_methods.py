@@ -34,6 +34,21 @@ class TestDocToolMore:
             for c in add_calls
         )
 
+    def test_add_table_cell_failures_surface_warning(self, monkeypatch, tmp_path):
+        """batch 与逐单元格都失败时，返回文案必须带警告，不能假成功。"""
+        from office_agent.office import runner as runner_module
+        from tests.conftest import FakeRunner
+
+        fake = FakeRunner(
+            default_stdout="Added table at /body/tbl[1]",
+            error_on="batch",
+        )
+        monkeypatch.setattr(runner_module, "_runner", fake)
+        tool = DocTool(str(tmp_path / "t.docx"))
+        result = tool.add_table([["h1", "h2"], ["v1", "v2"]], has_header=True)
+        assert "警告" in result
+        assert "单元格写入失败" in result
+
     def test_add_toc(self, fake_runner, tmp_path):
         tool = DocTool(str(tmp_path / "t.docx"))
         tool.add_toc(levels="1-3", title="目录")
@@ -128,6 +143,17 @@ class TestExcelToolMore:
         tool.set_cells("S", [["h1", "h2"], ["v1", "v2"]], start_ref="A1", has_header=True)
         batch_calls = [c for c in fake_runner.calls if c[0] == "batch"]
         assert batch_calls
+
+    def test_set_cells_partial_failure_surfaces_warning(self, monkeypatch, tmp_path):
+        from office_agent.office import runner as runner_module
+        from tests.conftest import FakeRunner
+
+        fake = FakeRunner(error_on="batch")
+        monkeypatch.setattr(runner_module, "_runner", fake)
+        tool = ExcelTool(str(tmp_path / "t.xlsx"))
+        result = tool.set_cells("S", [["a", "b"]], start_ref="A1")
+        assert "警告" in result
+        assert "单元格写入失败" in result
 
     def test_set_column_width(self, fake_runner, tmp_path):
         tool = ExcelTool(str(tmp_path / "t.xlsx"))
@@ -255,6 +281,20 @@ class TestPptxToolMore:
         tool.add_table(1, [["a", "b"]], has_header=True)
         add_calls = [c for c in fake_runner.calls if c[0] == "add"]
         assert any("table" in joined_args(c) for c in add_calls)
+
+    def test_add_table_partial_failure_surfaces_warning(self, monkeypatch, tmp_path):
+        from office_agent.office import runner as runner_module
+        from tests.conftest import FakeRunner
+
+        fake = FakeRunner(
+            responses={"get": {"data": {"results": [{"children": []}]}}},
+            error_on="batch",
+        )
+        monkeypatch.setattr(runner_module, "_runner", fake)
+        tool = PptxTool(str(tmp_path / "t.pptx"))
+        result = tool.add_table(1, [["a", "b"]], has_header=True)
+        assert "警告" in result
+        assert "单元格写入失败" in result
 
     def test_set_transition(self, fake_runner, tmp_path):
         tool = PptxTool(str(tmp_path / "t.pptx"))

@@ -179,11 +179,21 @@ class DocTool:
                 self.batch(ops2)
             except OfficeCLIError:
                 # 仍失败：逐单元格写（非原子，但保证尽量写入）
+                failed: list[str] = []
                 for op in ops2:
                     try:
                         self.batch([op])
-                    except OfficeCLIError:
-                        pass  # 单个单元格失败不阻断其余
+                    except OfficeCLIError as e:
+                        path = str(op.get("path") or "?")
+                        failed.append(path)
+                        logger.warning("表格单元格写入失败 path=%s: %s", path, e)
+                if failed:
+                    sample = ", ".join(failed[:5])
+                    more = f" 等共 {len(failed)} 处" if len(failed) > 5 else f"（{len(failed)} 处）"
+                    return (
+                        f"已添加 {rows} 行 × {cols} 列的表格"
+                        f"（警告: {len(failed)} 个单元格写入失败: {sample}{more}）"
+                    )
 
         return f"已添加 {rows} 行 × {cols} 列的表格"
 
