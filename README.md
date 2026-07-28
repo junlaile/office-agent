@@ -219,6 +219,8 @@ WebSocket 客户端消息：`start` / `choose_kind` / `outline_decision` / `offi
 | `LLM_MODEL` | pyproject / .env | 模型名（默认 `deepseek-v4-flash`） |
 | `OFFICECLI_BIN` | .env | 二进制路径（留空自动查找） |
 | `OUTPUT_DIR` | pyproject / .env | 文档输出目录（默认 `./output`） |
+| `SESSION_BACKEND` | .env | 会话存储后端：`memory`（默认）/ `mysql` |
+| `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE` | .env | `SESSION_BACKEND=mysql` 时生效 |
 
 ## 目录结构
 

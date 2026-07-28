@@ -55,6 +55,18 @@ class Settings:
     # Agent
     recursion_limit: int  # LangGraph 超级步上限（agent↔tools 往返算 2 步）
 
+    # Session store
+    session_backend: str  # memory/mysql
+    mysql_dsn: str
+    mysql_host: str
+    mysql_port: int
+    mysql_user: str
+    mysql_password: str
+    mysql_database: str
+    mysql_connect_timeout: int
+    mysql_read_timeout: int
+    mysql_write_timeout: int
+
     # 日志
     log_level: str  # DEBUG/INFO/WARNING/ERROR
 
@@ -109,6 +121,16 @@ def _load() -> Settings:
         officecli_timeout=int_env("OFFICECLI_TIMEOUT", 120),
         output_dir=output_dir,
         recursion_limit=int_env("RECURSION_LIMIT", 100),
+        session_backend=env("SESSION_BACKEND", "memory"),
+        mysql_dsn=env("MYSQL_DSN", ""),
+        mysql_host=env("MYSQL_HOST", "127.0.0.1"),
+        mysql_port=int_env("MYSQL_PORT", 3306),
+        mysql_user=env("MYSQL_USER", ""),
+        mysql_password=env("MYSQL_PASSWORD", ""),
+        mysql_database=env("MYSQL_DATABASE", "office_agent"),
+        mysql_connect_timeout=int_env("MYSQL_CONNECT_TIMEOUT", 5),
+        mysql_read_timeout=int_env("MYSQL_READ_TIMEOUT", 15),
+        mysql_write_timeout=int_env("MYSQL_WRITE_TIMEOUT", 15),
         log_level=env("LOG_LEVEL", "INFO"),
     )
 

@@ -221,7 +221,9 @@ def create_app() -> FastAPI:
                     sess0 = session
 
                     def _start(s=sess0, r=req) -> list:
-                        return list(s.start(r))
+                        events = list(s.start(r))
+                        session_manager.register(s)
+                        return events
 
                     events = await asyncio.to_thread(_start)
                     for ev in events:
@@ -242,7 +244,9 @@ def create_app() -> FastAPI:
                 msg = message
 
                 def _handle(s=sess, m=msg) -> list[dict[str, Any]]:
-                    return list(s.handle(m))
+                    events = list(s.handle(m))
+                    session_manager.register(s)
+                    return events
 
                 events = await asyncio.to_thread(_handle)
                 for ev in events:
