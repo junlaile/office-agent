@@ -1,0 +1,34 @@
+# git / IDE
+.git
+.gitignore
+.idea
+.vscode
+.zcode
+
+# Python 产物
+__pycache__
+*.py[oc]
+*.egg-info
+build
+dist
+wheels
+.venv
+
+# 测试 / 覆盖率产物
+.coverage
+htmlcov
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# 本地环境变量（含 API key，绝不能进镜像）
+.env
+
+# 生成的文档产物
+output
+
+# Docker 自身
+Dockerfile
+.dockerignore
+
+# 注意：bin/ 不忽略——本地已下载的 officecli 可被构建直接复用
