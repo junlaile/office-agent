@@ -111,3 +111,90 @@ class TestWebSocketProtocol:
                     break
             assert done is not None
             assert "download_url" in done
+
+    def test_reconnect_with_same_session_id(self, client, monkeypatch):
+        c, _ = client
+        graph = MagicMock()
+        graph.stream.return_value = iter([])
+        graph.get_state.return_value = SimpleNamespace(
+            values={"done": False, "summary": ""},
+            tasks=[],
+        )
+        monkeypatch.setattr(
+            "office_agent.agent.graph.build_graph", lambda *a, **k: graph
+        )
+        monkeypatch.setattr(
+            "office_agent.session.runner.pending_interrupt", lambda g, c: None
+        )
+
+        sid = "reconnect-sid"
+        with c.websocket_connect("/api/v1/ws") as ws1:
+            ws1.send_text(
+                json.dumps(
+                    {
+                        "type": "start",
+                        "session_id": sid,
+                        "requirement": "弄点东西",
+                    }
+                )
+            )
+            first = ws1.receive_json()
+            assert first["type"] == "session"
+            assert first["session_id"] == sid
+
+        with c.websocket_connect("/api/v1/ws") as ws2:
+            ws2.send_text(json.dumps({"type": "start", "session_id": sid}))
+            ev = ws2.receive_json()
+            assert ev["type"] == "session"
+            assert ev["reconnected"] is True
+            assert ev["session_id"] == sid
+
+    def test_rabbitmq_transport_mode_with_fake_bridge(self, tmp_path, monkeypatch):
+        from office_agent import config
+        from office_agent.session import prep
+
+        new_settings = dataclasses.replace(
+            config.settings,
+            output_dir=tmp_path,
+            llm_api_key="test-key",
+            transport_mode="rabbitmq_stomp",
+        )
+        monkeypatch.setattr(config, "settings", new_settings)
+        monkeypatch.setattr(prep, "settings", new_settings)
+
+        class _FakeBridge:
+            def __init__(self):
+                self.inbound = []
+                self.outbound = {}
+
+            def publish_inbound(self, envelope):
+                self.inbound.append(envelope)
+
+            def process_next(self):
+                if not self.inbound:
+                    return False
+                env = self.inbound.pop(0)
+                self.outbound.setdefault(env.session_id, []).append(
+                    {"type": "session", "session_id": env.session_id}
+                )
+                self.outbound[env.session_id].append(
+                    {"type": "done", "session_id": env.session_id}
+                )
+                return True
+
+            async def consume_outbound(self, session_id, timeout_s=0.2):
+                _ = timeout_s
+                return list(self.outbound.pop(session_id, []))
+
+            def close(self):
+                return None
+
+        monkeypatch.setattr("office_agent.api.app.build_stomp_bridge", _FakeBridge)
+        app = create_app()
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.send_text(json.dumps({"type": "start", "requirement": "测试"}))
+                first = ws.receive_json()
+                second = ws.receive_json()
+                assert first["type"] == "session"
+                assert second["type"] == "done"

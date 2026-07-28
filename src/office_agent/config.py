@@ -67,6 +67,17 @@ class Settings:
     mysql_read_timeout: int
     mysql_write_timeout: int
 
+    # Transport
+    transport_mode: str  # inproc/rabbitmq_stomp
+    rabbitmq_host: str
+    rabbitmq_port: int
+    rabbitmq_login: str
+    rabbitmq_passcode: str
+    rabbitmq_vhost: str
+    stomp_inbound_destination: str
+    stomp_outbound_destination: str
+    stomp_heartbeat_ms: int
+
     # 日志
     log_level: str  # DEBUG/INFO/WARNING/ERROR
 
@@ -131,6 +142,19 @@ def _load() -> Settings:
         mysql_connect_timeout=int_env("MYSQL_CONNECT_TIMEOUT", 5),
         mysql_read_timeout=int_env("MYSQL_READ_TIMEOUT", 15),
         mysql_write_timeout=int_env("MYSQL_WRITE_TIMEOUT", 15),
+        transport_mode=env("TRANSPORT_MODE", "inproc"),
+        rabbitmq_host=env("RABBITMQ_HOST", "127.0.0.1"),
+        rabbitmq_port=int_env("RABBITMQ_PORT", 61613),
+        rabbitmq_login=env("RABBITMQ_LOGIN", "guest"),
+        rabbitmq_passcode=env("RABBITMQ_PASSCODE", "guest"),
+        rabbitmq_vhost=env("RABBITMQ_VHOST", "/"),
+        stomp_inbound_destination=env(
+            "STOMP_INBOUND_DESTINATION", "/queue/office-agent.inbound"
+        ),
+        stomp_outbound_destination=env(
+            "STOMP_OUTBOUND_DESTINATION", "/queue/office-agent.outbound"
+        ),
+        stomp_heartbeat_ms=int_env("STOMP_HEARTBEAT_MS", 10000),
         log_level=env("LOG_LEVEL", "INFO"),
     )
 

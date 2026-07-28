@@ -221,6 +221,9 @@ WebSocket 客户端消息：`start` / `choose_kind` / `outline_decision` / `offi
 | `OUTPUT_DIR` | pyproject / .env | 文档输出目录（默认 `./output`） |
 | `SESSION_BACKEND` | .env | 会话存储后端：`memory`（默认）/ `mysql` |
 | `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE` | .env | `SESSION_BACKEND=mysql` 时生效 |
+| `TRANSPORT_MODE` | .env | 传输后端：`inproc`（默认）/ `rabbitmq_stomp` |
+| `RABBITMQ_HOST`/`RABBITMQ_PORT`/`RABBITMQ_LOGIN`/`RABBITMQ_PASSCODE`/`RABBITMQ_VHOST` | .env | `TRANSPORT_MODE=rabbitmq_stomp` 时连接配置 |
+| `STOMP_INBOUND_DESTINATION`/`STOMP_OUTBOUND_DESTINATION` | .env | STOMP 收发目的地 |
 
 ## 目录结构
 
