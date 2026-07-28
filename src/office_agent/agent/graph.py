@@ -6,12 +6,12 @@
 
     - agent 节点: LLM.bind_tools(ALL_TOOLS)，决定调哪个工具
     - tools 节点: 手写（不用 ToolNode），因为要处理
-        · ask_user 的 interrupt 挂起
-        · finish 的短路完成
+        · ask_user / finish 的 interrupt 挂起（finish 须用户确认内容后才 done）
+        · finish 确认通过后的短路完成
     - nudge 节点: agent 只输出文字、没发 tool_calls（"光说不练"）时注入纠偏提示，
         回 agent 重试。避免 DeepSeek 用自然语言描述意图却不调工具、首轮直接判死。
     - 路由: agent 之后，有 tool_calls → tools；有内容但无 tool_calls 且未达上限
-            → nudge；否则 END。tools 之后 finish → END，否则回 agent。
+            → nudge；否则 END。tools 之后 finish 已确认 → END，否则回 agent。
 
 防卡死: ① nudge 最多 _MAX_NUDGE 次（超过放行 END）；
         ② agent 节点在接近 recursion_limit 软阈值时会注入"尽快 finish"提示，
@@ -162,7 +162,8 @@ def _agent_node_factory(
                 content=(
                     f"【系统提醒】已用约 {rounds} 轮工具调用，剩余预算约 {remaining_rounds} 轮。"
                     f"请【立即停止添加新内容】，执行 view_text 自查（若还没查），"
-                    f"然后调用 finish 宣告完成。不要再调用 add_* 工具。"
+                    f"内容就绪后单独调用 finish（会把内容交给用户确认）。"
+                    f"不要再调用 add_* 工具。"
                 )
             )
             prompt_messages.append(reminder)
@@ -180,7 +181,8 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
     特殊处理:
         - ask_user: 内部 interrupt 挂起，resume 后返回值即用户答案，
           包成 ToolMessage 回传。
-        - finish: 标记 done，短路结束。
+        - finish: 内部 interrupt 展示内容请用户确认；确认后标记 done，
+          要求修改则回传意见、不置 done。
     其余 officecli 工具直接 .invoke 执行。
     """
     messages = state.get("messages", [])
@@ -189,21 +191,23 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
     updates: dict[str, Any] = {"messages": tool_messages}
     tool_calls = last_ai.tool_calls or []
 
-    # ask_user 必须独占执行：它内部 interrupt 会挂起整个节点，若同批还有
-    # 其他工具，会破坏"tool_calls 必须紧跟对应 ToolMessage"的消息约束
-    # （DeepSeek 报 400 insufficient tool messages）。
-    # 处理：检测到同批含 ask_user 时，整批都不执行，给每个 tool_call 回一条
-    # ToolMessage 提示 LLM "请单独调用 ask_user"，下一轮 LLM 会重新决策。
-    # 这样绝不触发 interrupt，消息配对始终完整。
-    if any(tc.get("name") == "ask_user" for tc in tool_calls) and len(tool_calls) > 1:
+    # ask_user / finish 必须独占执行：二者内部都会 interrupt 挂起整个节点，
+    # 若同批还有其他工具，会破坏"tool_calls 必须紧跟对应 ToolMessage"的消息约束
+    # （DeepSeek 报 400 insufficient tool messages），也会在 resume 后重跑整批。
+    # 处理：检测到同批含 ask_user 或 finish 且还有别的工具时，整批都不执行，
+    # 给每个 tool_call 回一条 ToolMessage 提示 LLM 单独调用。
+    exclusive = {"ask_user", "finish"}
+    exclusive_hits = [tc for tc in tool_calls if tc.get("name") in exclusive]
+    if exclusive_hits and len(tool_calls) > 1:
+        hit_name = exclusive_hits[0].get("name", "ask_user")
         for tc in tool_calls:
-            if tc.get("name") == "ask_user":
+            if tc.get("name") in exclusive:
                 tool_messages.append(
                     ToolMessage(
                         content=(
-                            "本批工具调用中同时包含了 ask_user 和其他工具。"
-                            "ask_user 会暂停整个流程等待用户输入，必须【单独】调用。"
-                            "请在下一次回复里【只】调用 ask_user，不要附带其他工具。"
+                            f"本批工具调用中同时包含了 {hit_name} 和其他工具。"
+                            f"{hit_name} 会暂停整个流程等待用户输入，必须【单独】调用。"
+                            f"请在下一次回复里【只】调用 {hit_name}，不要附带其他工具。"
                         ),
                         tool_call_id=tc.get("id", ""),
                     )
@@ -212,8 +216,8 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
                 tool_messages.append(
                     ToolMessage(
                         content=(
-                            f"该 {tc.get('name')} 调用已取消（本批同时调用了 ask_user）。"
-                            f"请在 ask_user 完成后重新发起。"
+                            f"该 {tc.get('name')} 调用已取消（本批同时调用了 {hit_name}）。"
+                            f"请在 {hit_name} 完成后重新发起。"
                         ),
                         tool_call_id=tc.get("id", ""),
                     )
@@ -228,16 +232,38 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
         tool = TOOL_BY_NAME.get(name)
 
         if name == "finish":
-            # 短路完成：把 summary 存入 state，并回传 ToolMessage
-            summary = args.get("summary", "")
-            updates["done"] = True
-            updates["summary"] = summary
-            tool_messages.append(
-                ToolMessage(
-                    content=f"已完成: {summary}",
-                    tool_call_id=tc_id,
+            # finish 内部会 interrupt 让用户确认内容；确认后返回 FINISHED:…
+            # 用户要求修改则返回修改意见，不置 done，agent 继续改。
+            if tool is None:
+                tool_messages.append(
+                    ToolMessage(
+                        content="错误: 未知工具 'finish'",
+                        tool_call_id=tc_id,
+                    )
                 )
-            )
+                return
+            try:
+                result = tool.invoke(args)
+            except GraphBubbleUp:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.exception("工具 finish 执行失败")
+                result = f"工具执行出错(finish): {e}"
+            result_str = str(result)
+            if result_str.startswith("FINISHED:"):
+                summary = args.get("summary", "")
+                updates["done"] = True
+                updates["summary"] = summary
+                tool_messages.append(
+                    ToolMessage(
+                        content=f"已完成: {summary}",
+                        tool_call_id=tc_id,
+                    )
+                )
+            else:
+                tool_messages.append(
+                    ToolMessage(content=result_str, tool_call_id=tc_id)
+                )
             return
 
         if tool is None:

@@ -10,7 +10,7 @@
       每轮请求少发几十个无关工具的 JSON schema，也减少 LLM 误调用。
     - ask_user 工具内部用 LangGraph interrupt 挂起，等用户输入后作为
       ToolMessage 回传给 agent。
-    - finish 工具让 LLM 显式宣告完成。
+    - finish 工具展示内容请用户确认后才真正完成。
 
 结构:
     - ``session.py``: 会话状态基础设施（set_session_doc / session_doc_kind /

@@ -156,8 +156,18 @@ class TestToolsNode:
     def _ai_with_calls(self, calls):
         return AIMessage(content="", tool_calls=calls)
 
-    def test_finish_short_circuits(self):
-        """finish 调用：done=True，存 summary，回 ToolMessage。"""
+    def test_finish_short_circuits(self, monkeypatch):
+        """finish 调用且用户确认：done=True，存 summary，回 ToolMessage。"""
+        def fake_interrupt(payload):
+            assert payload.get("type") == "confirm_finish"
+            return {"decision": "确认生成", "feedback": ""}
+
+        monkeypatch.setattr("office_agent.tools.common.interrupt", fake_interrupt)
+        # 预览读取失败也不影响确认路径
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "预览正文",
+        )
         ai = self._ai_with_calls([{"name": "finish", "args": {"summary": "完成总结"}, "id": "f1"}])
         result = _tools_node({"messages": [ai]})
         assert result["done"] is True
@@ -165,6 +175,21 @@ class TestToolsNode:
         msgs = result["messages"]
         assert len(msgs) == 1
         assert "完成总结" in msgs[0].content
+
+    def test_finish_revise_does_not_complete(self, monkeypatch):
+        """finish 用户要求修改：不置 done，回传修改意见。"""
+        monkeypatch.setattr(
+            "office_agent.tools.common.interrupt",
+            lambda payload: {"decision": "需要修改", "feedback": "请补充结论段"},
+        )
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "",
+        )
+        ai = self._ai_with_calls([{"name": "finish", "args": {"summary": "草稿"}, "id": "f1"}])
+        result = _tools_node({"messages": [ai]})
+        assert not result.get("done")
+        assert "请补充结论段" in result["messages"][0].content
 
     def test_unknown_tool_returns_error_message(self):
         """未知工具 → 错误 ToolMessage（不崩溃）。"""

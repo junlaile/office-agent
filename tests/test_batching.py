@@ -229,8 +229,8 @@ class TestToolsNodeCoalescing:
         # 第二条不必重复前缀
         assert BATCH_FALLBACK_PREFIX not in msgs[1].content
 
-    def test_finish_after_adds(self, fake_runner, doc_session):
-        """add × 2 + finish：add 合并，finish 正常短路。"""
+    def test_finish_with_adds_cancels_batch(self, fake_runner, doc_session):
+        """add × 2 + finish 同批：finish 须独占（会 interrupt），整批取消。"""
         result = _tools_node(
             self._state(
                 [
@@ -240,6 +240,11 @@ class TestToolsNodeCoalescing:
                 ]
             )
         )
-        assert result["done"] is True
+        assert not result.get("done")
         assert len(result["messages"]) == 3
-        assert len(fake_runner.calls_of("batch")) == 1
+        contents = " ".join(m.content for m in result["messages"])
+        assert "finish" in contents
+        assert "单独" in contents
+        # 未真正执行写操作
+        assert len(fake_runner.calls_of("batch")) == 0
+        assert len(fake_runner.calls_of("add")) == 0

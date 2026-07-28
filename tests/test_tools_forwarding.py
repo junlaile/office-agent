@@ -149,10 +149,85 @@ class TestPptxToolsForwarding:
 
 
 class TestFinishAndAskUser:
-    def test_finish_returns_summary(self):
-        """finish 不依赖 session，直接返回。"""
+    def test_finish_confirmed_returns_finished(self, monkeypatch):
+        """finish 经用户确认后返回 FINISHED。"""
+        monkeypatch.setattr(
+            "office_agent.tools.common.interrupt",
+            lambda payload: {"decision": "确认生成", "feedback": ""},
+        )
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "正文预览",
+        )
         result = TOOL_BY_NAME["finish"].invoke({"summary": "完成总结"})
+        assert result.startswith("FINISHED:")
         assert "完成总结" in result
+
+    def test_finish_revise_returns_feedback(self, monkeypatch):
+        """finish 用户要修改时返回意见、不以 FINISHED 开头。"""
+        monkeypatch.setattr(
+            "office_agent.tools.common.interrupt",
+            lambda payload: {"decision": "需要修改", "feedback": "改标题"},
+        )
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "",
+        )
+        result = TOOL_BY_NAME["finish"].invoke({"summary": "草稿"})
+        assert not str(result).startswith("FINISHED:")
+        assert "改标题" in result
+
+    def test_finish_revise_without_feedback(self, monkeypatch):
+        """选需要修改但未填意见时引导 ask_user。"""
+        monkeypatch.setattr(
+            "office_agent.tools.common.interrupt",
+            lambda payload: {"decision": "需要修改", "feedback": ""},
+        )
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "",
+        )
+        result = TOOL_BY_NAME["finish"].invoke({"summary": "草稿"})
+        assert "ask_user" in result
+
+    def test_finish_legacy_string_confirm(self, monkeypatch):
+        """旧格式字符串确认词仍可完成。"""
+        monkeypatch.setattr(
+            "office_agent.tools.common.interrupt",
+            lambda payload: "确认",
+        )
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "",
+        )
+        result = TOOL_BY_NAME["finish"].invoke({"summary": "ok"})
+        assert result.startswith("FINISHED:")
+
+    def test_finish_legacy_string_revise(self, monkeypatch):
+        """旧格式自由文本视为修改意见。"""
+        monkeypatch.setattr(
+            "office_agent.tools.common.interrupt",
+            lambda payload: "把摘要改短一点",
+        )
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "",
+        )
+        result = TOOL_BY_NAME["finish"].invoke({"summary": "ok"})
+        assert "把摘要改短一点" in result
+
+    def test_content_preview_truncates(self, monkeypatch):
+        """预览超长时截断。"""
+        from office_agent.tools import common as common_mod
+
+        class _FakeTool:
+            def view_text(self):
+                return "A" * 3000
+
+        monkeypatch.setattr(common_mod, "_tool", lambda: _FakeTool())
+        preview = common_mod._content_preview_for_confirm(max_chars=100)
+        assert preview.endswith("…（已截断）")
+        assert len(preview) < 120
 
     def test_query_vehicle_returns_dict(self):
         """query_vehicle 返回 dict（确定性）。"""

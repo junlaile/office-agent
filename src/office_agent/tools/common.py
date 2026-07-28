@@ -414,10 +414,14 @@ def ask_user(
     fields: list[AskField],
     description: str = "",
 ) -> dict:
-    """当缺少【关键】信息、存在歧义、或需要用户做选择时，向用户采集信息并等待回答。
+    """当缺少应由用户填写的信息、存在歧义、或需要用户做选择时，向用户采集并等待回答。
 
-    【何时调用】仅当某个信息缺失会导致文档无法生成或严重偏离预期时才用。
-    能用合理假设推断的（如没说字数就用默认篇幅），【不要】调本工具。
+    【何时调用·必须问】用户未提供时，下列信息【禁止臆造】，须调本工具：
+    - 报告人 / 汇报人 / 签发人 / 作者 / 撰写人
+    - 发文机关、主送机关、落款单位
+    - 成文/汇报日期、发文字号、业务编号
+    - 金额、指标、责任认定、车牌等硬事实
+    【可以不问】篇幅、章节数、版式——可合理推断。
 
     【表单模式（推荐）】一次提交多个相关字段，用户逐个填写，体验好。
     例如写交通事故报告缺信息时：
@@ -435,8 +439,8 @@ def ask_user(
 
     【字段设计原则】
     - 枚举型字段（责任认定、严重程度、优先级...）尽量给 options，减少用户打字。
-    - 自由文本字段（经过描述、地址...）options 留空。
-    - 必填(true)仅用于缺失会导致文档偏离的字段；能缺省的字段设 false。
+    - 自由文本字段（经过描述、地址、姓名...）options 留空。
+    - 身份类字段（报告人/汇报人/签发人/机关名）一律 required=true。
 
     参数:
         title: 卡片标题（简洁，如 "交通事故信息采集"）。
@@ -458,12 +462,73 @@ def ask_user(
     return answer if isinstance(answer, dict) else {}
 
 
+def _content_preview_for_confirm(max_chars: int = 2500) -> str:
+    """读取当前文档纯文本，截断后供 finish 确认展示。失败时返回空串。"""
+    try:
+        text = (_tool().view_text() or "").strip()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("finish 预览读取失败: %s", e)
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n…（已截断）"
+
+
 @tool
 def finish(summary: str) -> str:
-    """宣告文档生成完成。当你确认文档结构完整、内容已写好、且自查无误后调用本工具。
+    """宣告文档生成完成。调用后会把当前文档内容展示给用户确认，确认后才真正结束。
+
+    【强制】不要在还有 XX/XXX 占位、或报告人/签发人等身份信息未问清时调用。
+    用户若要求修改，本工具返回修改意见——按意见改完后再次调用本工具。
+
     参数:
         summary: 一句话总结你生成了什么文档（会展示给用户）。"""
-    return f"FINISHED: {summary}"
+    preview = _content_preview_for_confirm()
+    payload = {
+        "type": "confirm_finish",
+        "title": "文档内容确认",
+        "description": f"Agent 总结：{summary}",
+        "content_preview": preview,
+        "fields": [
+            {
+                "key": "decision",
+                "label": "是否确认生成",
+                "required": True,
+                "options": ["确认生成", "需要修改"],
+            },
+            {
+                "key": "feedback",
+                "label": "修改意见（选「需要修改」时填写）",
+                "required": False,
+                "hint": "说明要改哪里、改成什么",
+            },
+        ],
+    }
+    answer = interrupt(payload)
+    if isinstance(answer, str):
+        # 旧格式单问题：自由文本视为修改意见（非明确确认词则要求修改）
+        text = answer.strip()
+        if text in ("确认生成", "确认", "y", "yes", "ok", "好", "可以"):
+            return f"FINISHED: {summary}"
+        return (
+            f"用户未确认完成，要求修改：{text or '（未说明细节）'}。"
+            "请按意见修改文档，改完后再次调用 finish。"
+        )
+    if not isinstance(answer, dict):
+        return "用户确认结果无效。请再次调用 finish 让用户确认。"
+
+    decision = str(answer.get("decision", "")).strip()
+    feedback = str(answer.get("feedback", "")).strip()
+    confirmed = decision in ("确认生成", "确认") or decision.lower() in ("y", "yes", "ok")
+    if confirmed and "修改" not in decision:
+        return f"FINISHED: {summary}"
+    # 需要修改
+    if not feedback:
+        return (
+            "用户选择需要修改但未填写意见。"
+            "请用 ask_user 询问具体修改意见，改完后再调 finish。"
+        )
+    return f"用户未确认完成，要求修改：{feedback}。请按意见修改文档，改完后再次调用 finish。"
 
 
 # ============================================================

@@ -48,6 +48,18 @@ class TestBuildSystemPromptNormal:
         assert "ask_user" in p
         assert "finish" in p
 
+    def test_must_ask_identity_fields(self):
+        """提示词要求报告人/签发人等身份字段必须询问，禁止臆造。"""
+        p = build_system_prompt("output/x.docx")
+        assert "报告人" in p
+        assert "签发人" in p
+        assert "禁止臆造" in p or "禁止自行编造" in p
+
+    def test_finish_requires_user_confirm(self):
+        """完成前须经用户确认。"""
+        p = build_system_prompt("output/x.docx")
+        assert "用户确认" in p
+
 
 class TestBuildSystemPromptOfficial:
     """公文模式（doc_type 非空）。"""

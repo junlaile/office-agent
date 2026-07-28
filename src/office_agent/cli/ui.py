@@ -25,6 +25,7 @@ from office_agent.config import settings
 from office_agent.domain.format import infer_doc_kind
 from office_agent.domain.templates import (
     default_merge_data,
+    is_upward,
     template_path,
 )
 from office_agent.office.doc import DocTool
@@ -156,6 +157,56 @@ def _derive_doc_path(requirement: str, doc_type: str | None = None) -> str:
     return str((settings.output_dir / f"{safe}_{stamp}.{kind}").resolve())
 
 
+def _collect_official_header(doc_type: str) -> dict[str, str]:
+    """向用户采集公文版头关键信息（发文机关/签发人等），空值不覆盖默认占位。
+
+    签发人（上行文，含报告）等身份字段必填；字号/日期可跳过用占位。
+    """
+    fields: list[dict] = [
+        {
+            "key": "org",
+            "label": "发文机关",
+            "required": True,
+            "hint": "如：市公安局（写入版头红字与落款）",
+        },
+    ]
+    if is_upward(doc_type):
+        # 报告/请示/议案：签发人即用户常说的「报告人」角色
+        signer_label = "签发人（报告人）" if doc_type == "报告" else "签发人"
+        fields.append(
+            {
+                "key": "signer",
+                "label": signer_label,
+                "required": True,
+                "hint": "姓名，勿留空",
+            }
+        )
+    fields.extend(
+        [
+            {
+                "key": "doc_no",
+                "label": "发文字号",
+                "required": False,
+                "hint": "如：X公发〔2026〕1号；不确定可回车跳过",
+            },
+            {
+                "key": "date_cn",
+                "label": "成文日期",
+                "required": False,
+                "hint": "如：二〇二六年三月三十一日；不确定可回车跳过",
+            },
+        ]
+    )
+    answers = _collect_form(
+        {
+            "title": f"《{doc_type}》版头信息",
+            "description": "请填写公文版头/落款信息；该用户填的请如实填写，不要跳过必填项。",
+            "fields": fields,
+        }
+    )
+    return {k: v.strip() for k, v in answers.items() if isinstance(v, str) and v.strip()}
+
+
 def _prepare_official_doc(doc_type: str, doc_path: str) -> tuple[str | None, str]:
     """从公文模板预创建文档并预填版头槽位，返回 (文种名, 模板正文)。
 
@@ -164,11 +215,12 @@ def _prepare_official_doc(doc_type: str, doc_path: str) -> tuple[str | None, str
     调用前提: doc_type 已由 detect_doc_type 识别为合法文种。
     做的事:
         1. 定位模板文件 template/word/NN-{doc_type}.docx。
-        2. merge 模板到 doc_path（一步完成复制 + 版头槽位预填）。
-        3. 立即读一次 view_text，拿到带路径标注的模板正文，回传给
+        2. 【向用户采集】发文机关/签发人（上行文）等版头信息。
+        3. merge 模板到 doc_path（复制 + 版头槽位预填；用户未填的用占位）。
+        4. 立即读一次 view_text，拿到带路径标注的模板正文，回传给
            build_system_prompt 注入提示词——让 LLM 第一轮就"看到"段落结构，
            不必依赖它自己调 view_text（核心：解决"没读模板就瞎改"问题）。
-        4. 打印预创建结果。
+        5. 打印预创建结果。
 
     template_text 读取失败（officecli 异常等）不阻断主流程：退化为空串，
     提示词回退到软指令"先 view_text"，LLM 仍可自行读取兜底。
@@ -178,8 +230,9 @@ def _prepare_official_doc(doc_type: str, doc_path: str) -> tuple[str | None, str
         logger.warning("公文模板缺失，回退普通模式: %s", tmpl)
         return None, ""
 
-    # 预填数据：用户没提供的版头槽位用默认占位值
-    merge_data = default_merge_data(doc_type)
+    # 先问用户版头关键字段，再 merge（用户填的优先，未填的用占位）
+    user_header = _collect_official_header(doc_type)
+    merge_data = default_merge_data(doc_type, **user_header)
     try:
         merge_template(str(tmpl), doc_path, merge_data)
     except OfficeCLIError as e:
@@ -194,8 +247,9 @@ def _prepare_official_doc(doc_type: str, doc_path: str) -> tuple[str | None, str
         # 预读失败不致命：退化为空，LLM 自调 view_text 兜底
         logger.warning("模板正文预读失败，回退到 LLM 自行 view_text: %s", e)
 
+    filled = "、".join(f"{k}={v}" for k, v in user_header.items()) or "（均用占位）"
     print(f"{_GREEN}✓ 已从 GB/T 9704 模板创建{_RESET}")
-    print(f"{_DIM}  模板: {tmpl.name} | 版头槽位已预填占位值，正文待 agent 编辑{_RESET}")
+    print(f"{_DIM}  模板: {tmpl.name} | 用户已填: {filled} | 正文待 agent 编辑{_RESET}")
     return doc_type, template_text
 
 
@@ -411,8 +465,10 @@ def _print_tool_results(message: ToolMessage) -> None:
 def _handle_interrupt(graph, config: dict) -> Command | None:
     """若当前挂在 interrupt，按 payload 形态渲染并收集用户输入。
 
-    支持两种 payload:
-      - 表单卡片（新）: {title, description, fields:[{key,label,required,options,hint}]}
+    支持三种 payload:
+      - 完成确认（finish）: {type:confirm_finish, title, description,
+        content_preview, fields:[...]} —— 先展示正文预览再采集确认
+      - 表单卡片（新）: {title, description, fields:[{key,label,...}]}
       - 单问题（旧）  : {question, options}  —— 向后兼容
     """
     snapshot = graph.get_state(config)
@@ -427,6 +483,12 @@ def _handle_interrupt(graph, config: dict) -> Command | None:
 
     payload = interrupts[0].value or {}
 
+    # finish 确认：先把文档内容返给用户看
+    if isinstance(payload, dict) and (
+        payload.get("type") == "confirm_finish" or payload.get("content_preview")
+    ):
+        _print_content_confirm_preview(payload)
+
     # 分支：表单卡片 vs 单问题
     resume_value: dict[str, str] | str
     if isinstance(payload, dict) and payload.get("fields"):
@@ -436,6 +498,29 @@ def _handle_interrupt(graph, config: dict) -> Command | None:
 
     print(f"\n{_DIM}已收到，继续生成…{_RESET}")
     return Command(resume=resume_value)
+
+
+def _print_content_confirm_preview(payload: dict) -> None:
+    """展示 finish 前的文档内容预览，供用户确认后再决定是否生成完成。"""
+    title = payload.get("title") or "文档内容确认"
+    description = payload.get("description") or ""
+    preview = (payload.get("content_preview") or "").strip()
+
+    print(f"\n{_BOLD}{_CYAN}┌─ 📄 {title} ", end="")
+    pad = max(0, 44 - len(str(title)) - 4)
+    print("─" * pad + f"┐{_RESET}")
+    if description:
+        print(f"{_CYAN}│{_RESET} {_DIM}{description}{_RESET}")
+    print(f"{_CYAN}│{_RESET} {_DIM}请审阅下列内容；确认无误后再选择「确认生成」{_RESET}")
+    print(f"{_CYAN}│{_RESET}")
+    if preview:
+        for line in preview.splitlines() or ["（空）"]:
+            # 过长行截断，避免刷屏
+            shown = line if len(line) <= 100 else line[:100] + "…"
+            print(f"{_CYAN}│{_RESET} {shown}")
+    else:
+        print(f"{_CYAN}│{_RESET} {_DIM}（未能读取文档预览，仍可根据 Agent 总结确认）{_RESET}")
+    print(f"{_CYAN}└" + "─" * 52 + f"┘{_RESET}")
 
 
 def _collect_single_question(payload: dict) -> str:

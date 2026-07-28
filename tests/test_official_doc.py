@@ -31,10 +31,19 @@ def stub_doctool_viewtext(monkeypatch):
     return _FakeDocTool
 
 
+@pytest.fixture
+def stub_header_collect(monkeypatch):
+    """跳过版头交互采集，默认返回空（走占位 merge）。"""
+    monkeypatch.setattr(cli_ui, "_collect_official_header", lambda doc_type: {})
+    return True
+
+
 class TestPrepareOfficialDoc:
     """_prepare_official_doc 编排（mock merge + view_text）。"""
 
-    def test_calls_merge_and_returns_type(self, monkeypatch, tmp_path, capsys, stub_doctool_viewtext):
+    def test_calls_merge_and_returns_type(
+        self, monkeypatch, tmp_path, capsys, stub_doctool_viewtext, stub_header_collect
+    ):
         """正常情况：调 merge + 预读正文 + 返回 (文种名, 正文)。"""
         merge_calls = []
 
@@ -57,7 +66,9 @@ class TestPrepareOfficialDoc:
         captured = capsys.readouterr()
         assert "GB/T 9704" in captured.out or "模板创建" in captured.out
 
-    def test_missing_template_returns_none(self, monkeypatch, tmp_path, stub_doctool_viewtext):
+    def test_missing_template_returns_none(
+        self, monkeypatch, tmp_path, stub_doctool_viewtext, stub_header_collect
+    ):
         """模板缺失时返回 (None, '')。"""
         nonexistent = tmp_path / "不存在.docx"
         # _prepare_official_doc 用的是 cli_ui 模块绑定的 template_path
@@ -65,7 +76,9 @@ class TestPrepareOfficialDoc:
         result = _prepare_official_doc("通知", str(tmp_path / "out.docx"))
         assert result == (None, "")
 
-    def test_merge_failure_returns_none(self, monkeypatch, tmp_path, stub_doctool_viewtext):
+    def test_merge_failure_returns_none(
+        self, monkeypatch, tmp_path, stub_doctool_viewtext, stub_header_collect
+    ):
         """merge 失败时返回 (None, '')（不抛）。"""
         from office_agent.office.runner import OfficeCLIError
 
@@ -76,7 +89,9 @@ class TestPrepareOfficialDoc:
         result = _prepare_official_doc("通知", str(tmp_path / "out.docx"))
         assert result == (None, "")
 
-    def test_viewtext_failure_returns_empty_text(self, monkeypatch, tmp_path, stub_doctool_viewtext):
+    def test_viewtext_failure_returns_empty_text(
+        self, monkeypatch, tmp_path, stub_doctool_viewtext, stub_header_collect
+    ):
         """view_text 预读失败时不阻断：文种名照常返回，正文退化为空串。"""
         from office_agent.office.runner import OfficeCLIError
 
@@ -92,7 +107,9 @@ class TestPrepareOfficialDoc:
         result = _prepare_official_doc("通知", str(tmp_path / "out.docx"))
         assert result == ("通知", "")  # 预读失败优雅降级
 
-    def test_merge_data_has_required_keys(self, monkeypatch, tmp_path, stub_doctool_viewtext):
+    def test_merge_data_has_required_keys(
+        self, monkeypatch, tmp_path, stub_doctool_viewtext, stub_header_collect
+    ):
         """传给 merge 的 data 含必要槽位。"""
         captured_data = {}
 
@@ -105,7 +122,9 @@ class TestPrepareOfficialDoc:
         required = {"org", "doc_no", "date_cn", "issuer"}
         assert required <= set(captured_data.keys())
 
-    def test_upward_doc_has_signer_in_data(self, monkeypatch, tmp_path, stub_doctool_viewtext):
+    def test_upward_doc_has_signer_in_data(
+        self, monkeypatch, tmp_path, stub_doctool_viewtext, stub_header_collect
+    ):
         """上行文（请示）的 merge_data 含非空 signer。"""
         captured_data = {}
 
@@ -116,3 +135,46 @@ class TestPrepareOfficialDoc:
         monkeypatch.setattr(cli_ui, "merge_template", spy_merge)
         _prepare_official_doc("请示", str(tmp_path / "out.docx"))
         assert captured_data["signer"]  # 非空
+
+    def test_user_header_overrides_merge(
+        self, monkeypatch, tmp_path, stub_doctool_viewtext
+    ):
+        """用户填写的版头信息优先写入 merge_data。"""
+        monkeypatch.setattr(
+            cli_ui,
+            "_collect_official_header",
+            lambda doc_type: {
+                "org": "市应急局",
+                "signer": "张明",
+                "doc_no": "X应发〔2026〕3号",
+            },
+        )
+        captured_data = {}
+
+        def spy_merge(tmpl, out, data):
+            captured_data.update(data)
+            return "OK"
+
+        monkeypatch.setattr(cli_ui, "merge_template", spy_merge)
+        _prepare_official_doc("报告", str(tmp_path / "out.docx"))
+        assert captured_data["org"] == "市应急局"
+        assert captured_data["signer"] == "张明"
+        assert captured_data["doc_no"] == "X应发〔2026〕3号"
+
+
+class TestCollectOfficialHeader:
+    def test_report_asks_signer_as_reporter(self, monkeypatch):
+        """报告文种采集签发人（报告人）。"""
+        captured = {}
+
+        def fake_form(payload):
+            captured["payload"] = payload
+            return {"org": "市局", "signer": "李华", "doc_no": "", "date_cn": ""}
+
+        monkeypatch.setattr(cli_ui, "_collect_form", fake_form)
+        answers = cli_ui._collect_official_header("报告")
+        labels = [f["label"] for f in captured["payload"]["fields"]]
+        assert any("报告人" in lab for lab in labels)
+        assert answers["signer"] == "李华"
+        assert answers["org"] == "市局"
+        assert "doc_no" not in answers  # 空串已过滤

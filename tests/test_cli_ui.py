@@ -289,3 +289,59 @@ class TestOutlineDecision:
         )
         monkeypatch.setattr(ui, "_readline", lambda prompt="": "3")
         assert ui._run_outline_approval_loop("写周报") is None
+
+
+class TestContentConfirmPreview:
+    def test_print_preview_with_content(self, capsys):
+        from office_agent.cli import ui
+
+        ui._print_content_confirm_preview(
+            {
+                "title": "文档内容确认",
+                "description": "Agent 总结：周报",
+                "content_preview": "第一行\n第二行",
+            }
+        )
+        out = capsys.readouterr().out
+        assert "文档内容确认" in out
+        assert "第一行" in out
+        assert "审阅" in out
+
+    def test_print_preview_empty(self, capsys):
+        from office_agent.cli import ui
+
+        ui._print_content_confirm_preview({"title": "确认", "content_preview": ""})
+        out = capsys.readouterr().out
+        assert "未能读取" in out or "确认" in out
+
+    def test_handle_interrupt_confirm_finish(self, monkeypatch, capsys):
+        """confirm_finish payload：展示预览后采集表单。"""
+        from office_agent.cli import ui
+
+        class _Intr:
+            value = {
+                "type": "confirm_finish",
+                "title": "文档内容确认",
+                "description": "总结",
+                "content_preview": "正文预览行",
+                "fields": [
+                    {"key": "decision", "label": "是否确认", "required": True,
+                     "options": ["确认生成", "需要修改"]},
+                    {"key": "feedback", "label": "意见", "required": False},
+                ],
+            }
+
+        class _Task:
+            interrupts = [_Intr()]
+
+        class _Snap:
+            tasks = [_Task()]
+
+        answers = iter(["1", ""])  # 确认生成 + 空意见
+        monkeypatch.setattr(ui, "_readline", lambda prompt="": next(answers))
+        graph = type("G", (), {"get_state": lambda self, c: _Snap()})()
+        cmd = ui._handle_interrupt(graph, {})
+        assert cmd is not None
+        assert cmd.resume["decision"] == "确认生成"
+        out = capsys.readouterr().out
+        assert "正文预览行" in out
