@@ -13,23 +13,19 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import sys
-from datetime import datetime
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
 from office_agent.cli.user_input import get_bridge
-from office_agent.config import settings
 from office_agent.domain.format import infer_doc_kind
-from office_agent.domain.templates import (
-    default_merge_data,
-    is_upward,
-    template_path,
+from office_agent.officecli import OfficeCLIError, resolve_bin
+from office_agent.session.prep import (
+    build_doc_path,
+    merge_official_doc,
+    official_header_fields,
 )
-from office_agent.office.doc import DocTool
-from office_agent.officecli import OfficeCLIError, merge_template, resolve_bin
 
 logger = logging.getLogger("office_agent.cli.ui")
 
@@ -139,64 +135,18 @@ def _derive_doc_path(requirement: str, doc_type: str | None = None) -> str:
 
     doc_type 非空表示已识别为公文 → 强制 .docx 扩展名，跳过类型询问。
     """
-    settings.output_dir.mkdir(parents=True, exist_ok=True)
     if doc_type:
-        # 公文模式：一定是 Word
         kind = "docx"
     else:
         kind, score = _infer_doc_kind(requirement)
         if score == 0:
-            # 没有明确线索，问用户
             kind = _ask_doc_kind()
-    # 提取需求里的中文/字母数字作文件名
-    safe = re.sub(r'[\\/:*?"<>|]', "", requirement).strip()
-    safe = re.sub(r"\s+", "_", safe)
-    # 截断并兜底
-    safe = safe[:30] or "document"
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return str((settings.output_dir / f"{safe}_{stamp}.{kind}").resolve())
+    return build_doc_path(requirement, kind=kind)  # type: ignore[arg-type]
 
 
 def _collect_official_header(doc_type: str) -> dict[str, str]:
-    """向用户采集公文版头关键信息（发文机关/签发人等），空值不覆盖默认占位。
-
-    签发人（上行文，含报告）等身份字段必填；字号/日期可跳过用占位。
-    """
-    fields: list[dict] = [
-        {
-            "key": "org",
-            "label": "发文机关",
-            "required": True,
-            "hint": "如：市公安局（写入版头红字与落款）",
-        },
-    ]
-    if is_upward(doc_type):
-        # 报告/请示/议案：签发人即用户常说的「报告人」角色
-        signer_label = "签发人（报告人）" if doc_type == "报告" else "签发人"
-        fields.append(
-            {
-                "key": "signer",
-                "label": signer_label,
-                "required": True,
-                "hint": "姓名，勿留空",
-            }
-        )
-    fields.extend(
-        [
-            {
-                "key": "doc_no",
-                "label": "发文字号",
-                "required": False,
-                "hint": "如：X公发〔2026〕1号；不确定可回车跳过",
-            },
-            {
-                "key": "date_cn",
-                "label": "成文日期",
-                "required": False,
-                "hint": "如：二〇二六年三月三十一日；不确定可回车跳过",
-            },
-        ]
-    )
+    """向用户采集公文版头关键信息（发文机关/签发人等），空值不覆盖默认占位。"""
+    fields = official_header_fields(doc_type)
     answers = _collect_form(
         {
             "title": f"《{doc_type}》版头信息",
@@ -211,46 +161,20 @@ def _prepare_official_doc(doc_type: str, doc_path: str) -> tuple[str | None, str
     """从公文模板预创建文档并预填版头槽位，返回 (文种名, 模板正文)。
 
     失败时返回 (None, "")，由调用方回退到普通生成流程。
-
-    调用前提: doc_type 已由 detect_doc_type 识别为合法文种。
-    做的事:
-        1. 定位模板文件 template/word/NN-{doc_type}.docx。
-        2. 【向用户采集】发文机关/签发人（上行文）等版头信息。
-        3. merge 模板到 doc_path（复制 + 版头槽位预填；用户未填的用占位）。
-        4. 立即读一次 view_text，拿到带路径标注的模板正文，回传给
-           build_system_prompt 注入提示词——让 LLM 第一轮就"看到"段落结构，
-           不必依赖它自己调 view_text（核心：解决"没读模板就瞎改"问题）。
-        5. 打印预创建结果。
-
-    template_text 读取失败（officecli 异常等）不阻断主流程：退化为空串，
-    提示词回退到软指令"先 view_text"，LLM 仍可自行读取兜底。
+    先向用户采集版头，再委托 ``merge_official_doc``。
     """
-    tmpl = template_path(doc_type)
-    if not tmpl.exists():
-        logger.warning("公文模板缺失，回退普通模式: %s", tmpl)
-        return None, ""
+    from office_agent.domain.templates import template_path
 
-    # 先问用户版头关键字段，再 merge（用户填的优先，未填的用占位）
     user_header = _collect_official_header(doc_type)
-    merge_data = default_merge_data(doc_type, **user_header)
-    try:
-        merge_template(str(tmpl), doc_path, merge_data)
-    except OfficeCLIError as e:
-        logger.warning("公文模板预填失败，回退普通模式: %s", e)
+    resolved, template_text = merge_official_doc(doc_type, doc_path, user_header)
+    if resolved is None:
         return None, ""
-
-    # 预读模板正文（带路径标注），注入提示词，避免 LLM 跳过读模板
-    template_text = ""
-    try:
-        template_text = DocTool(doc_path).view_text()
-    except OfficeCLIError as e:
-        # 预读失败不致命：退化为空，LLM 自调 view_text 兜底
-        logger.warning("模板正文预读失败，回退到 LLM 自行 view_text: %s", e)
 
     filled = "、".join(f"{k}={v}" for k, v in user_header.items()) or "（均用占位）"
+    tmpl = template_path(doc_type)
     print(f"{_GREEN}✓ 已从 GB/T 9704 模板创建{_RESET}")
     print(f"{_DIM}  模板: {tmpl.name} | 用户已填: {filled} | 正文待 agent 编辑{_RESET}")
-    return doc_type, template_text
+    return resolved, template_text
 
 
 def _print_outline_preview(outline: str) -> None:

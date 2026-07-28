@@ -174,6 +174,27 @@ uv run office-agent "做一个 10 页的产品介绍 PPT"
 | `继续` | 继续当前任务（不重新 create_doc） |
 | `退出` | 结束本次运行 |
 
+### 5. Web API（供前端对接）
+
+仅后端 API，覆盖完整对话能力（文档类型确认、Word 大纲批准、公文版头、`ask_user` / `finish` 确认含正文预览、忙时补充/强制打断、文档下载）。
+
+```bash
+uv run office-agent-api
+# 或: uv run python -m office_agent.api
+# 默认 http://0.0.0.0:8000 ；Swagger: /docs
+```
+
+| 端点 | 说明 |
+|---|---|
+| `GET /health` | 健康检查（LLM / officecli） |
+| `WS /api/v1/ws` | 对话主通道 |
+| `GET /api/v1/sessions/{id}` | 会话状态 |
+| `GET /api/v1/sessions/{id}/download` | 下载生成的文档 |
+
+WebSocket 客户端消息：`start` / `choose_kind` / `outline_decision` / `official_header` / `resume` / `supplement` / `force` / `continue` / `quit` / `pause`。
+
+服务端事件：`session` / `need_kind` / `outline` / `need_official_header` / `agent_step` / `tool_result` / `interrupt`（含 `type=confirm_finish` 与 `content_preview`）/ `done`（含 `download_url`）/ `error` / `cancelled`。
+
 ## 配置项
 
 | 变量 | 位置 | 说明 |
@@ -203,6 +224,12 @@ office-agent/
 │   │   ├── main.py              # run() 编排 + UserInputBridge 生命周期
 │   │   ├── ui.py                # 终端 UI / interrupt 表单
 │   │   └── user_input.py        # 忙时输入桥（补充/强制/继续/退出）
+│   ├── session/                 # CLI/API 共用会话编排
+│   │   ├── prep.py              # 路径/版头/模板 merge（无 UI）
+│   │   └── runner.py            # AgentSession 状态机
+│   ├── api/                     # FastAPI WebSocket + 下载
+│   │   ├── app.py               # 路由与 WS 协议
+│   │   └── manager.py           # 进程内会话表
 │   ├── office/                  # OfficeCLI 实现层
 │   │   ├── runner.py            # subprocess 执行器 + merge_template
 │   │   ├── doc.py / excel.py / pptx.py   # DocTool / ExcelTool / PptxTool
@@ -275,7 +302,7 @@ uv run mypy src/            # 类型检查
 
 - **新增公文模板**（加一个文种）：见[《新增office模版的说明.md》](新增office模版的说明.md)。只需在 `domain/templates.py` 的注册表登记 + 在 `scripts/gen_official_templates.py` 写正文范例，其余（文件名、提示词文种清单/结语、工具描述、测试）自动派生。
 - 如需更多 officecli 能力（条件格式、数据透视表、幻灯片切换动画、SmartArt 等），在 `office/doc.py` / `excel.py` / `pptx.py` 对应类加方法 + `tools/doc.py` / `excel.py` / `pptx.py` 加 `@tool`。命令面参考 `officecli help <format> <element>`。
-- 接 Web UI：`cli/main.py` 的 interrupt/resume 循环可替换为 WebSocket / HTTP 端点。
+- 接 Web UI：使用 `session.AgentSession` + `api` WebSocket 协议；前端只需实现事件驱动的对话页。
 
 ## 许可
 
