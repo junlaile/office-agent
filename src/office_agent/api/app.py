@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
@@ -126,7 +126,6 @@ def create_app() -> FastAPI:
     @app.post("/v1/chat/completions")
     async def chat_completions(
         body: ChatCompletionRequest,
-        request: Request,
         x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
         authorization: str | None = Header(default=None),
     ):
