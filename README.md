@@ -187,9 +187,24 @@ uv run office-agent-api
 | 端点 | 说明 |
 |---|---|
 | `GET /health` | 健康检查（LLM / officecli） |
-| `WS /api/v1/ws` | 对话主通道 |
+| **`POST /v1/chat/completions`** | **OpenAI 兼容对话**（`stream` 可选） |
+| `GET /v1/models` | OpenAI 兼容模型列表 |
+| `WS /api/v1/ws` | 原生 WebSocket 对话主通道 |
 | `GET /api/v1/sessions/{id}` | 会话状态 |
 | `GET /api/v1/sessions/{id}/download` | 下载生成的文档 |
+
+#### OpenAI 兼容用法
+
+任意支持 OpenAI API 的客户端，将 Base URL 设为 `http://localhost:8000/v1`，模型名 `office-agent`：
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer any" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"office-agent","messages":[{"role":"user","content":"写一份项目周报"}]}'
+```
+
+多轮续接：助手回复含 `<!--office-agent-session:UUID-->`；也可传请求头 `X-Session-Id`。按提示回复「批准 / 修改… / JSON 表单」即可完成大纲、版头、`ask_user`、finish 确认。
 
 WebSocket 客户端消息：`start` / `choose_kind` / `outline_decision` / `official_header` / `resume` / `supplement` / `force` / `continue` / `quit` / `pause`。
 

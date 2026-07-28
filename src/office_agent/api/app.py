@@ -8,12 +8,20 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from office_agent import config as app_config
 from office_agent.api import manager as session_manager
+from office_agent.api.openai_compat import (
+    ChatCompletionRequest,
+    build_completion_response,
+    events_to_assistant_text,
+    iter_sse_chunks,
+    models_list_response,
+    run_turn,
+)
 from office_agent.config import assert_llm_ready, setup_logging
 from office_agent.officecli import OfficeCLIError, resolve_bin
 from office_agent.session.runner import AgentSession, SessionPhase
@@ -27,8 +35,8 @@ def create_app() -> FastAPI:
         title="Office Agent API",
         description=(
             "交互式 Office 文档生成 Agent 的后端 API。"
-            "通过 WebSocket `/api/v1/ws` 完成完整对话（大纲/版头/ask_user/"
-            "finish 确认/忙时补充），HTTP 提供健康检查与文档下载。"
+            "OpenAI 兼容 `/v1/chat/completions` + WebSocket `/api/v1/ws`；"
+            "支持大纲/版头/ask_user/finish 确认/忙时补充与文档下载。"
         ),
         version="0.1.0",
     )
@@ -99,6 +107,75 @@ def create_app() -> FastAPI:
             path,
             media_type=media,
             filename=path.name,
+        )
+
+
+    @app.get("/v1/models")
+    def list_models() -> dict[str, Any]:
+        """OpenAI 兼容：模型列表。"""
+        return models_list_response()
+
+    @app.get("/v1/models/{model_id}")
+    def get_model(model_id: str) -> dict[str, Any]:
+        data = models_list_response()["data"]
+        for m in data:
+            if m["id"] == model_id:
+                return m
+        raise HTTPException(status_code=404, detail="model not found")
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(
+        body: ChatCompletionRequest,
+        request: Request,
+        x_session_id: str | None = Header(default=None, alias="X-Session-Id"),
+        authorization: str | None = Header(default=None),
+    ):
+        """OpenAI 兼容 Chat Completions（支持 stream）。
+
+        Authorization Bearer 任意非空即可（兼容常见客户端校验）；
+        会话续接优先 ``X-Session-Id`` / body.session_id，其次历史消息中的
+        ``<!--office-agent-session:UUID-->`` 标记。
+        """
+        # 兼容客户端：有 Authorization 头时不强制校验 key 内容
+        _ = authorization
+        try:
+            assert_llm_ready()
+        except SystemExit as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
+        sid = x_session_id or body.session_id
+
+        def _run() -> tuple[AgentSession, list[dict[str, Any]]]:
+            return run_turn(messages=body.messages, session_id=sid)
+
+        try:
+            session, events = await asyncio.to_thread(_run)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            logger.exception("chat.completions 失败")
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+        if body.stream:
+            return StreamingResponse(
+                iter_sse_chunks(
+                    session=session, events=events, model=body.model
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Session-Id": session.session_id,
+                },
+            )
+
+        text = events_to_assistant_text(session, events)
+        payload = build_completion_response(
+            session=session, text=text, model=body.model
+        )
+        return JSONResponse(
+            payload,
+            headers={"X-Session-Id": session.session_id},
         )
 
     @app.websocket("/api/v1/ws")
