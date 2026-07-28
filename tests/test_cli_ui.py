@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from office_agent.cli import ui as cli_ui
 from office_agent.cli.ui import (
     _derive_doc_path,
     _format_tool_call,
@@ -27,12 +26,17 @@ from office_agent.domain.format import (
 
 @pytest.fixture
 def output_to_tmp(monkeypatch, tmp_path):
-    """把 cli_ui.settings.output_dir 指向临时目录。
+    """把 settings.output_dir 指向临时目录。
 
     Settings 是 frozen dataclass，用 dataclasses.replace 造新对象替换。
+    ``_derive_doc_path`` 现委托 ``session.prep.build_doc_path``，需同时 patch。
     """
-    new_settings = dataclasses.replace(cli_ui.settings, output_dir=tmp_path)
-    monkeypatch.setattr(cli_ui, "settings", new_settings)
+    from office_agent import config
+    from office_agent.session import prep
+
+    new_settings = dataclasses.replace(config.settings, output_dir=tmp_path)
+    monkeypatch.setattr(config, "settings", new_settings)
+    monkeypatch.setattr(prep, "settings", new_settings)
     return tmp_path
 
 

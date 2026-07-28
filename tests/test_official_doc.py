@@ -10,15 +10,13 @@ import pytest
 
 from office_agent.cli import ui as cli_ui
 from office_agent.cli.ui import _prepare_official_doc
+from office_agent.session import prep
 
 
 @pytest.fixture
 def stub_doctool_viewtext(monkeypatch):
-    """把 cli_ui.DocTool 换成假实现：view_text 返回固定正文，不碰 officecli。
-
-    _prepare_official_doc 在 merge 后会调 DocTool(doc_path).view_text() 预读
-    模板正文；测试里必须 stub 掉，否则会真调 officecli.exe。
-    """
+    """把 session.prep.DocTool 换成假实现：view_text 返回固定正文，不碰 officecli。"""
+    from office_agent.session import prep
 
     class _FakeDocTool:
         def __init__(self, doc_path):
@@ -27,7 +25,7 @@ def stub_doctool_viewtext(monkeypatch):
         def view_text(self):
             return "[/body/p[4]] 范例标题\n[/body/p[5]] 范例主送\n[/body/p[6]] 正文范例"
 
-    monkeypatch.setattr(cli_ui, "DocTool", _FakeDocTool)
+    monkeypatch.setattr(prep, "DocTool", _FakeDocTool)
     return _FakeDocTool
 
 
@@ -51,7 +49,7 @@ class TestPrepareOfficialDoc:
             merge_calls.append((tmpl, out, data))
             return "Merged OK"
 
-        monkeypatch.setattr(cli_ui, "merge_template", fake_merge)
+        monkeypatch.setattr(prep, "merge_template", fake_merge)
         out_path = str(tmp_path / "通知.docx")
 
         result = _prepare_official_doc("通知", out_path)
@@ -72,7 +70,7 @@ class TestPrepareOfficialDoc:
         """模板缺失时返回 (None, '')。"""
         nonexistent = tmp_path / "不存在.docx"
         # _prepare_official_doc 用的是 cli_ui 模块绑定的 template_path
-        monkeypatch.setattr(cli_ui, "template_path", lambda dt: nonexistent)
+        monkeypatch.setattr(prep, "template_path", lambda dt: nonexistent)
         result = _prepare_official_doc("通知", str(tmp_path / "out.docx"))
         assert result == (None, "")
 
@@ -85,7 +83,7 @@ class TestPrepareOfficialDoc:
         def failing_merge(*a, **k):
             raise OfficeCLIError("merge 失败")
 
-        monkeypatch.setattr(cli_ui, "merge_template", failing_merge)
+        monkeypatch.setattr(prep, "merge_template", failing_merge)
         result = _prepare_official_doc("通知", str(tmp_path / "out.docx"))
         assert result == (None, "")
 
@@ -102,8 +100,8 @@ class TestPrepareOfficialDoc:
             def view_text(self):
                 raise OfficeCLIError("view 失败")
 
-        monkeypatch.setattr(cli_ui, "merge_template", lambda *a, **k: "OK")
-        monkeypatch.setattr(cli_ui, "DocTool", _BoomDocTool)
+        monkeypatch.setattr(prep, "merge_template", lambda *a, **k: "OK")
+        monkeypatch.setattr(prep, "DocTool", _BoomDocTool)
         result = _prepare_official_doc("通知", str(tmp_path / "out.docx"))
         assert result == ("通知", "")  # 预读失败优雅降级
 
@@ -117,7 +115,7 @@ class TestPrepareOfficialDoc:
             captured_data.update(data)
             return "OK"
 
-        monkeypatch.setattr(cli_ui, "merge_template", spy_merge)
+        monkeypatch.setattr(prep, "merge_template", spy_merge)
         _prepare_official_doc("通知", str(tmp_path / "out.docx"))
         required = {"org", "doc_no", "date_cn", "issuer"}
         assert required <= set(captured_data.keys())
@@ -132,7 +130,7 @@ class TestPrepareOfficialDoc:
             captured_data.update(data)
             return "OK"
 
-        monkeypatch.setattr(cli_ui, "merge_template", spy_merge)
+        monkeypatch.setattr(prep, "merge_template", spy_merge)
         _prepare_official_doc("请示", str(tmp_path / "out.docx"))
         assert captured_data["signer"]  # 非空
 
@@ -155,7 +153,7 @@ class TestPrepareOfficialDoc:
             captured_data.update(data)
             return "OK"
 
-        monkeypatch.setattr(cli_ui, "merge_template", spy_merge)
+        monkeypatch.setattr(prep, "merge_template", spy_merge)
         _prepare_official_doc("报告", str(tmp_path / "out.docx"))
         assert captured_data["org"] == "市应急局"
         assert captured_data["signer"] == "张明"
