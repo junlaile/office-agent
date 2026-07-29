@@ -65,6 +65,8 @@ def create_app() -> FastAPI:
             "llm_configured": bool(app_config.settings.llm_api_key),
             "officecli_ok": officecli_ok,
             "officecli": officecli_path,
+            "transport_mode": app_config.settings.transport_mode,
+            "session_backend": app_config.settings.session_backend,
         }
 
     @app.get("/api/v1/sessions/{session_id}")
@@ -190,13 +192,12 @@ def create_app() -> FastAPI:
                 logger.exception("STOMP 初始化失败，回退 inproc")
                 await transport.error(f"STOMP 不可用，回退 inproc: {e}")
         session: AgentSession | None = None
-        session_version = 0
         try:
             # 启动前轻量检查（不强制 officecli——集成环境可能后装）
             try:
                 assert_llm_ready()
             except SystemExit as e:
-                await ws.send_json({"type": "error", "message": str(e)})
+                await transport.error(str(e))
                 await ws.close()
                 return
 
@@ -222,18 +223,20 @@ def create_app() -> FastAPI:
                         )
                         continue
                     requested_sid = str(message.get("session_id") or "").strip()
-                    existing = session_manager.get(requested_sid) if requested_sid else None
+                    existing = (
+                        session_manager.get(requested_sid) if requested_sid else None
+                    )
                     if existing is not None:
                         session = existing
                         await transport.send(_session_reconnected_event(session))
                         continue
                     session = AgentSession(session_id=requested_sid or None)
                     session_manager.register(session)
-                    session_version += 1
+                    session.session_version += 1
                     envelope = MessageEnvelope.from_client_message(
                         session_id=session.session_id,
                         message=message,
-                        session_version=session_version,
+                        session_version=session.session_version,
                     )
                     events = await _dispatch_message(
                         session=session,
@@ -257,11 +260,11 @@ def create_app() -> FastAPI:
                     )
                     continue
 
-                session_version += 1
+                session.session_version += 1
                 envelope = MessageEnvelope.from_client_message(
                     session_id=session.session_id,
                     message=message,
-                    session_version=session_version,
+                    session_version=session.session_version,
                 )
                 events = await _dispatch_message(
                     session=session,

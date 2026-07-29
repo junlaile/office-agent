@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 office-agent = "office_agent.cli.main:main"
 office-agent-api = "office_agent.api.__main__:main"
+office-agent-worker = "office_agent.api.worker:main"
 
 [build-system]
 requires = ["setuptools>=61"]

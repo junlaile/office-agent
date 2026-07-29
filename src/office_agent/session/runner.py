@@ -92,6 +92,7 @@ class AgentSession:
         self.kind: str | None = None
         self.approved_outline = ""
         self.template_text = ""
+        self.session_version = 0
         self._outline_feedback = ""
         self._last_outline = ""
         self._graph: Any = None

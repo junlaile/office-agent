@@ -38,3 +38,23 @@ def remove(session_id: str) -> None:
     with _lock:
         _sessions.pop(session_id, None)
     _store.remove(session_id)
+
+
+def is_duplicate_message(
+    *, session_id: str, message_id: str, session_version: int
+) -> bool:
+    return _store.is_duplicate_message(
+        session_id=session_id,
+        message_id=message_id,
+        session_version=session_version,
+    )
+
+
+def mark_message_processed(
+    *, session_id: str, message_id: str, session_version: int
+) -> None:
+    _store.mark_message_processed(
+        session_id=session_id,
+        message_id=message_id,
+        session_version=session_version,
+    )

@@ -57,6 +57,7 @@ class Settings:
 
     # Session store
     session_backend: str  # memory/mysql
+    session_ttl_seconds: int
     mysql_dsn: str
     mysql_host: str
     mysql_port: int
@@ -76,7 +77,13 @@ class Settings:
     rabbitmq_vhost: str
     stomp_inbound_destination: str
     stomp_outbound_destination: str
+    stomp_dlq_destination: str
+    stomp_exchange: str
+    stomp_routing_key: str
     stomp_heartbeat_ms: int
+    stomp_max_retries: int
+    stomp_retry_delay_ms: int
+    stomp_use_memory_broker: bool
 
     # 日志
     log_level: str  # DEBUG/INFO/WARNING/ERROR
@@ -133,6 +140,7 @@ def _load() -> Settings:
         output_dir=output_dir,
         recursion_limit=int_env("RECURSION_LIMIT", 100),
         session_backend=env("SESSION_BACKEND", "memory"),
+        session_ttl_seconds=int_env("SESSION_TTL_SECONDS", 86400),
         mysql_dsn=env("MYSQL_DSN", ""),
         mysql_host=env("MYSQL_HOST", "127.0.0.1"),
         mysql_port=int_env("MYSQL_PORT", 3306),
@@ -154,7 +162,16 @@ def _load() -> Settings:
         stomp_outbound_destination=env(
             "STOMP_OUTBOUND_DESTINATION", "/queue/office-agent.outbound"
         ),
+        stomp_dlq_destination=env(
+            "STOMP_DLQ_DESTINATION", "/queue/office-agent.dlq"
+        ),
+        stomp_exchange=env("STOMP_EXCHANGE", "office-agent"),
+        stomp_routing_key=env("STOMP_ROUTING_KEY", "session"),
         stomp_heartbeat_ms=int_env("STOMP_HEARTBEAT_MS", 10000),
+        stomp_max_retries=int_env("STOMP_MAX_RETRIES", 3),
+        stomp_retry_delay_ms=int_env("STOMP_RETRY_DELAY_MS", 200),
+        stomp_use_memory_broker=env("STOMP_USE_MEMORY_BROKER", "").lower()
+        in ("1", "true", "yes"),
         log_level=env("LOG_LEVEL", "INFO"),
     )
 

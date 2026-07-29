@@ -182,6 +182,8 @@ uv run office-agent "做一个 10 页的产品介绍 PPT"
 uv run office-agent-api
 # 或: uv run python -m office_agent.api
 # 默认 http://0.0.0.0:8000 ；Swagger: /docs
+# RabbitMQ STOMP 模式可另启独立 worker：
+# uv run office-agent-worker
 ```
 
 | 端点 | 说明 |
@@ -220,10 +222,14 @@ WebSocket 客户端消息：`start` / `choose_kind` / `outline_decision` / `offi
 | `OFFICECLI_BIN` | .env | 二进制路径（留空自动查找） |
 | `OUTPUT_DIR` | pyproject / .env | 文档输出目录（默认 `./output`） |
 | `SESSION_BACKEND` | .env | 会话存储后端：`memory`（默认）/ `mysql` |
+| `SESSION_TTL_SECONDS` | .env | 会话 TTL（秒，默认 86400；`0` 不过期） |
 | `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE` | .env | `SESSION_BACKEND=mysql` 时生效 |
 | `TRANSPORT_MODE` | .env | 传输后端：`inproc`（默认）/ `rabbitmq_stomp` |
 | `RABBITMQ_HOST`/`RABBITMQ_PORT`/`RABBITMQ_LOGIN`/`RABBITMQ_PASSCODE`/`RABBITMQ_VHOST` | .env | `TRANSPORT_MODE=rabbitmq_stomp` 时连接配置 |
-| `STOMP_INBOUND_DESTINATION`/`STOMP_OUTBOUND_DESTINATION` | .env | STOMP 收发目的地 |
+| `STOMP_INBOUND_DESTINATION`/`STOMP_OUTBOUND_DESTINATION`/`STOMP_DLQ_DESTINATION` | .env | STOMP 收发与死信目的地 |
+| `STOMP_EXCHANGE`/`STOMP_ROUTING_KEY` | .env | exchange / routing key |
+| `STOMP_MAX_RETRIES`/`STOMP_RETRY_DELAY_MS` | .env | 失败重试次数与间隔 |
+| `STOMP_USE_MEMORY_BROKER` | .env | `1` 时用进程内 broker（无 RabbitMQ 联调） |
 
 ## 目录结构
 
