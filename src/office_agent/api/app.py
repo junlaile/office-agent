@@ -24,8 +24,6 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from office_agent import config as app_config
 from office_agent.api import manager as session_manager
-from office_agent.api.stomp_bridge import build_stomp_bridge
-from office_agent.api.transport import InProcessWebSocketTransport, MessageEnvelope, TransportAdapter
 from office_agent.api.openai_compat import (
     ChatCompletionRequest,
     build_completion_response,
@@ -33,6 +31,12 @@ from office_agent.api.openai_compat import (
     iter_sse_chunks,
     models_list_response,
     run_turn,
+)
+from office_agent.api.stomp_bridge import build_stomp_bridge
+from office_agent.api.transport import (
+    InProcessWebSocketTransport,
+    MessageEnvelope,
+    TransportAdapter,
 )
 from office_agent.config import assert_llm_ready
 from office_agent.log import get_logger, setup_logging

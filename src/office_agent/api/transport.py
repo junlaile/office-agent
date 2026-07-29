@@ -47,7 +47,7 @@ class MessageEnvelope:
     @classmethod
     def from_client_message(
         cls, *, session_id: str, message: dict[str, Any], session_version: int = 0
-    ) -> "MessageEnvelope":
+    ) -> MessageEnvelope:
         """把客户端原始 JSON 消息包装成信封（自动生成 trace/message id）。"""
         msg_type = str(message.get("type") or "").strip()
         # type 字段提升为 message_type，其余字段原样进 payload
@@ -75,7 +75,7 @@ class MessageEnvelope:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "MessageEnvelope":
+    def from_dict(cls, data: dict[str, Any]) -> MessageEnvelope:
         """从字典还原信封;缺失字段取安全默认值（兼容旧版本消息）。"""
         return cls(
             version=int(data.get("version") or 1),
