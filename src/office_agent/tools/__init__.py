@@ -5,27 +5,95 @@
       所有工具内部读取该路径，LLM 不需要传路径参数（避免出错）。
     - 扩展名路由：路径后缀决定文档类型（.docx / .xlsx / .pptx），
       _tool() 工厂按 kind 返回 DocTool / ExcelTool / PptxTool。
-    - 按会话类型裁剪：graph.py 用 ``tools_for_kind(kind)`` 只把当前会话
-      用得到的工具绑定给 LLM（通用 + 对应格式专属 + 控制），而非全量 49 个——
-      每轮请求少发几十个无关工具的 JSON schema，也减少 LLM 误调用。
-    - ask_user 工具内部用 LangGraph interrupt 挂起，等用户输入后作为
-      ToolMessage 回传给 agent。
-    - finish 工具展示内容请用户确认后才真正完成。
+    - 通用工具（create_doc / add_table / view_text / validate_doc / finish）
+      三种格式都支持；docx/xlsx/pptx 专属工具在其他格式下给出明确提示。
+    - ask_user 只构造结构化交互请求；LangGraph interaction 节点负责
+      interrupt/resume 并把答案作为 ToolMessage 回传给 agent。
+    - finish 工具让 LLM 显式宣告完成。
 
 结构:
-    - ``session.py``: 会话状态基础设施（set_session_doc / session_doc_kind /
-      _tool 工厂），子模块从它 import，无循环依赖。
-    - 本 ``__init__.py``: 聚合 ALL_TOOLS / TOOL_BY_NAME / tools_for_kind，
-      并 re-export session 符号（向后兼容）。
+    - 本 ``__init__.py``: 会话状态基础设施 + ToolRegistry 注册。
     - ``common.py``: 通用工具（三格式共用）+ 控制（ask_user/finish）+ 公文/查询。
     - ``doc.py``:    Word 专属工具。
     - ``excel.py``:  Excel 专属工具。
     - ``pptx.py``:   PowerPoint 专属工具。
-    - ``batching.py``: 同批"末尾追加"类调用 → 一次 officecli batch 的翻译。
+
+子模块通过 ``from office_agent.tools import _tool, session_doc_kind, ...``
+反向引用本包的会话基础设施——因此这些符号必须在 ``__init__.py`` 定义，
+且子模块的 import 在 ``__init__.py`` 底部执行（此时基础设施已就绪）。
 """
 
 from __future__ import annotations
 
+import logging
+
+from office_agent.officecli import DocTool, ExcelTool, OfficeCLIError, PptxTool
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# 会话状态（模块级，agent 运行期间唯一）
+# ============================================================
+_session_doc_path: str | None = None
+
+
+def set_session_doc(path: str | None) -> None:
+    """main.py 在启动 agent 前调用，设定本会话的文档路径。
+
+    传 None 清空（供测试 teardown）。
+    """
+    global _session_doc_path
+    _session_doc_path = path
+
+
+def session_doc_path() -> str | None:
+    return _session_doc_path
+
+
+def session_doc_kind() -> str:
+    """返回当前会话的文档类型: 'docx' | 'xlsx' | 'pptx'。
+
+    路径未初始化时抛错；扩展名无法识别时默认 'docx'。
+    """
+    if not _session_doc_path:
+        raise OfficeCLIError("会话文档路径未初始化（请先调用 set_session_doc）")
+    p = _session_doc_path.lower()
+    if p.endswith(".xlsx"):
+        return "xlsx"
+    if p.endswith(".pptx"):
+        return "pptx"
+    return "docx"
+
+
+def _tool():
+    """工厂：按当前会话扩展名返回对应的 Tool 实例。"""
+    if not _session_doc_path:
+        raise OfficeCLIError("会话文档路径未初始化（请先调用 set_session_doc）")
+    kind = session_doc_kind()
+    if kind == "xlsx":
+        return ExcelTool(_session_doc_path)
+    if kind == "pptx":
+        return PptxTool(_session_doc_path)
+    return DocTool(_session_doc_path)
+
+
+def _doc() -> DocTool:
+    """向后兼容：旧代码可能引用 _doc()。"""
+    return _tool()  # type: ignore[return-value]
+
+
+def _wrong_kind_msg(tool_name: str, expected: str, hint: str = "") -> str:
+    """当前会话格式与工具不符时的友好提示（而非 AttributeError 崩溃）。"""
+    actual = session_doc_kind()
+    logger.warning("工具与文档类型不匹配: %s 需要 %s，当前 %s", tool_name, expected, actual)
+    hint_str = f" {hint}" if hint else ""
+    return (f"{tool_name} 是 {expected.upper()} 专属工具，当前文档是 {actual}。{hint_str}").strip()
+
+
+# ============================================================
+# 从子模块 import 所有 @tool 工具，聚合 ALL_TOOLS
+# ============================================================
+# 必须放在会话基础设施定义【之后】：子模块 import 本包时要用到上面的符号。
 from .common import (  # noqa: E402
     add_image,
     add_table,
@@ -83,39 +151,33 @@ from .pptx import (  # noqa: E402
     set_theme_colors,
     set_theme_fonts,
 )
-
-# 会话基础设施（re-export，保持 from office_agent.tools import X 兼容）
-from .session import (
-    _doc,
-    _tool,
-    _wrong_kind_msg,
-    doc_tool,
-    excel_tool,
-    pptx_tool,
-    session_doc_kind,
-    session_doc_path,
-    set_session_doc,
+from .registry import (  # noqa: E402
+    ALL_DOCUMENT_KINDS,
+    DOCX_KINDS,
+    PPTX_KINDS,
+    XLSX_KINDS,
+    ExecutionMode,
+    SideEffect,
+    ToolRegistry,
+    ToolSpec,
 )
 
 # ============================================================
-# 按会话类型的工具子集（graph.py 用 tools_for_kind 绑定）
+# 工具清单（按文档类型绑定；ALL_TOOLS 保留作注册表）
 # ============================================================
-# 三格式共用
-_COMMON_TOOLS = [
+COMMON_TOOLS = [
+    # 三种格式均支持
     create_doc,
+    add_table,
     view_text,
     validate_doc,
     set_doc_properties,
 ]
-# 控制类（每个会话都要）
-_CONTROL_TOOLS = [
-    ask_user,
-    finish,
-]
-_WORD_ONLY = [
+
+IMAGE_TOOLS = [add_image]
+
+WORD_TOOLS = [
     start_from_template,
-    add_table,
-    add_image,
     add_title,
     add_heading,
     add_paragraph,
@@ -132,7 +194,8 @@ _WORD_ONLY = [
     replace_text,
     remove_paragraph,
 ]
-_EXCEL_ONLY = [
+
+EXCEL_TOOLS = [
     add_sheet,
     set_cell,
     set_cells,
@@ -151,9 +214,8 @@ _EXCEL_ONLY = [
     autofit_column,
     rename_sheet,
 ]
-_PPTX_ONLY = [
-    add_table,
-    add_image,
+
+PPTX_TOOLS = [
     add_slide,
     add_textbox,
     add_slide_image,
@@ -164,93 +226,43 @@ _PPTX_ONLY = [
     set_theme_fonts,
 ]
 
-_KIND_TOOLS = {
-    "docx": _WORD_ONLY,
-    "xlsx": _EXCEL_ONLY,
-    "pptx": _PPTX_ONLY,
-}
-
-
-def tools_for_kind(kind: str, *, include_vehicle: bool = False) -> list:
-    """返回某会话类型应绑定给 LLM 的工具子集。
-
-    kind: 'docx' | 'xlsx' | 'pptx'（未知值按 docx 处理，与 session_doc_kind 一致）。
-    include_vehicle: 需求与车辆/交通相关时为 True，附加 query_vehicle。
-
-    只影响 bind_tools 暴露给 LLM 的清单；执行分发仍走全量 TOOL_BY_NAME，
-    即使 LLM 幻觉调用了未绑定的工具也能得到友好错误而非崩溃。
-    """
-    specific = _KIND_TOOLS.get(kind, _WORD_ONLY)
-    tools = [*_COMMON_TOOLS, *specific]
-    if include_vehicle:
-        tools.append(query_vehicle)
-    tools.extend(_CONTROL_TOOLS)
-    return tools
-
-
-# ============================================================
-# 全量工具清单（执行分发用；tools_for_kind 是它的子集视图）
-# ============================================================
-ALL_TOOLS = [
-    # 通用
-    create_doc,
-    start_from_template,
-    add_table,
-    view_text,
-    validate_doc,
-    add_image,
-    set_doc_properties,
-    # Word 专属
-    add_title,
-    add_heading,
-    add_paragraph,
-    add_list_item,
-    add_toc,
-    add_page_number,
-    add_header,
-    add_footer,
-    add_hyperlink,
-    add_word_chart,
-    add_section_break,
-    # Word 编辑（改/删/替换）——公文模式主力
-    update_paragraph,
-    replace_text,
-    remove_paragraph,
-    # Excel 专属
-    add_sheet,
-    set_cell,
-    set_cells,
-    set_formula,
-    add_excel_chart,
-    sort_sheet,
-    set_autofilter,
-    highlight_cells,
-    add_color_scale,
-    add_data_bar,
-    add_pivot_table,
-    add_list_table,
-    add_dropdown,
-    merge_cells,
-    set_column_width,
-    autofit_column,
-    rename_sheet,
-    # PowerPoint 专属
-    add_slide,
-    add_textbox,
-    add_slide_image,
-    add_slide_table,
-    set_slide_transition,
-    set_slide_notes,
-    set_theme_colors,
-    set_theme_fonts,
-    # 业务专项 + 控制
+CONTROL_TOOLS = [
+    # 业务专项 + 控制（三种格式均可使用）
     query_vehicle,
     ask_user,
     finish,
 ]
 
-# 工具名 -> 工具对象，便于 tools 节点按名分发
-TOOL_BY_NAME = {t.name: t for t in ALL_TOOLS}
+
+TOOL_SPECS = [
+    ToolSpec(create_doc, ALL_DOCUMENT_KINDS, side_effect=SideEffect.INIT),
+    ToolSpec(add_table, ALL_DOCUMENT_KINDS),
+    ToolSpec(view_text, ALL_DOCUMENT_KINDS, side_effect=SideEffect.READ),
+    ToolSpec(validate_doc, ALL_DOCUMENT_KINDS, side_effect=SideEffect.READ),
+    ToolSpec(set_doc_properties, ALL_DOCUMENT_KINDS),
+    ToolSpec(add_image, frozenset({"docx", "pptx"})),
+    ToolSpec(start_from_template, DOCX_KINDS, side_effect=SideEffect.INIT),
+    *(ToolSpec(tool, DOCX_KINDS) for tool in WORD_TOOLS if tool is not start_from_template),
+    *(ToolSpec(tool, XLSX_KINDS) for tool in EXCEL_TOOLS),
+    *(ToolSpec(tool, PPTX_KINDS) for tool in PPTX_TOOLS),
+    ToolSpec(query_vehicle, ALL_DOCUMENT_KINDS, side_effect=SideEffect.NONE),
+    ToolSpec(
+        ask_user,
+        ALL_DOCUMENT_KINDS,
+        execution_mode=ExecutionMode.INTERACTION,
+        side_effect=SideEffect.HUMAN,
+        can_batch=False,
+    ),
+    ToolSpec(finish, ALL_DOCUMENT_KINDS, side_effect=SideEffect.TERMINAL),
+]
+
+REGISTRY = ToolRegistry(TOOL_SPECS)
+
+# 兼容既有导入；实际来源统一为注册表。
+ALL_TOOLS = REGISTRY.all_tools
+TOOL_BY_NAME = REGISTRY.tool_by_name
+SPEC_BY_NAME = REGISTRY.spec_by_name
+tools_for_doc_path = REGISTRY.bindable_tools
 
 __all__ = [
     # 会话基础设施
@@ -259,14 +271,25 @@ __all__ = [
     "session_doc_kind",
     "_tool",
     "_doc",
-    "doc_tool",
-    "excel_tool",
-    "pptx_tool",
     "_wrong_kind_msg",
+    "_session_doc_path",
     # 聚合
     "ALL_TOOLS",
     "TOOL_BY_NAME",
-    "tools_for_kind",
+    "TOOL_SPECS",
+    "SPEC_BY_NAME",
+    "REGISTRY",
+    "ToolSpec",
+    "ToolRegistry",
+    "ExecutionMode",
+    "SideEffect",
+    "COMMON_TOOLS",
+    "IMAGE_TOOLS",
+    "WORD_TOOLS",
+    "EXCEL_TOOLS",
+    "PPTX_TOOLS",
+    "CONTROL_TOOLS",
+    "tools_for_doc_path",
     # 所有工具（供 from office_agent.tools import X）
     *[t.name for t in ALL_TOOLS],
 ]

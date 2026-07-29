@@ -6,16 +6,25 @@
 
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+import json
+from types import SimpleNamespace
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END
+from langgraph.types import Command
 
 from office_agent.agent.graph import (
     _MAX_NUDGE,
+    _agent_node_factory,
     _count_idle_turns,
+    _interaction_node,
     _nudge_node,
+    _prepare_interaction_node,
     _route_after_agent,
+    _route_after_prepare_interaction,
     _route_after_tools,
     _tools_node,
+    build_graph,
 )
 
 
@@ -54,6 +63,36 @@ class TestCountIdleTurns:
     def test_empty_or_none(self):
         assert _count_idle_turns([]) == 0
         assert _count_idle_turns(None) == 0
+
+
+class TestAgentToolBinding:
+    @staticmethod
+    def _bound_tool_names(monkeypatch, doc_path):
+        captured = []
+
+        class FakeLLM:
+            def bind_tools(self, tools):
+                captured.extend(tools)
+                return self
+
+        monkeypatch.setattr("office_agent.agent.graph.get_llm", lambda: FakeLLM())
+        _agent_node_factory(doc_path)
+        return {tool.name for tool in captured}
+
+    def test_docx_binds_word_tools_only(self, monkeypatch):
+        names = self._bound_tool_names(monkeypatch, "report.docx")
+        assert {"add_title", "update_paragraph", "finish"} <= names
+        assert names.isdisjoint({"set_cells", "add_slide"})
+
+    def test_xlsx_binds_excel_tools_only(self, monkeypatch):
+        names = self._bound_tool_names(monkeypatch, "report.xlsx")
+        assert {"set_cells", "add_excel_chart", "finish"} <= names
+        assert names.isdisjoint({"add_title", "add_slide", "add_image"})
+
+    def test_pptx_binds_presentation_tools_only(self, monkeypatch):
+        names = self._bound_tool_names(monkeypatch, "report.pptx")
+        assert {"add_slide", "add_image", "finish"} <= names
+        assert names.isdisjoint({"add_title", "set_cells"})
 
 
 # ============================================================
@@ -96,7 +135,7 @@ class TestRouteAfterAgent:
         assert _route_after_agent({"messages": msgs}) == END
 
     def test_nudge_then_tool_call_resets_to_tools(self):
-        """nudge 后 LLM 改用 tool_calls → 回到正常 tools 路径（纠偏生效）。"""
+        """nudge 后 LLM 改用交互工具 → 进入交互准备节点。"""
         msgs = [
             AIMessage(content="我先问问"),  # 空转1
             SystemMessage(content="【系统纠偏】请用工具"),
@@ -104,7 +143,30 @@ class TestRouteAfterAgent:
                 content="", tool_calls=[{"name": "ask_user", "args": {}, "id": "1"}]
             ),
         ]
-        assert _route_after_agent({"messages": msgs}) == "tools"
+        assert _route_after_agent({"messages": msgs}) == "prepare_interaction"
+
+    def test_interaction_tool_routes_to_prepare(self):
+        msg = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "ask_user",
+                    "args": {"title": "确认", "fields": []},
+                    "id": "a1",
+                }
+            ],
+        )
+        assert _route_after_agent({"messages": [msg]}) == "prepare_interaction"
+
+    def test_mixed_interaction_batch_routes_to_tools_for_rejection(self):
+        msg = AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "ask_user", "args": {"title": "确认", "fields": []}, "id": "a1"},
+                {"name": "create_doc", "args": {}, "id": "c1"},
+            ],
+        )
+        assert _route_after_agent({"messages": [msg]}) == "tools"
 
 
 # ============================================================
@@ -233,3 +295,169 @@ class TestToolsNode:
         assert len(msgs) == 1
         # 应是 ToolMessage（错误信息）
         assert isinstance(msgs[0], ToolMessage)
+
+    def test_completed_call_is_not_executed_again(self, monkeypatch):
+        tool = SimpleNamespace(invoke=lambda _args: (_ for _ in ()).throw(AssertionError()))
+        spec = SimpleNamespace(name="fake", side_effect="write", can_batch=True)
+        monkeypatch.setattr("office_agent.agent.graph.TOOL_BY_NAME", {"fake": tool})
+        monkeypatch.setattr("office_agent.agent.graph.SPEC_BY_NAME", {"fake": spec})
+        ai = self._ai_with_calls([{"name": "fake", "args": {}, "id": "same"}])
+        state = {
+            "messages": [ai],
+            "executed_calls": {
+                "same": {
+                    "tool_call_id": "same",
+                    "tool_name": "fake",
+                    "status": "completed",
+                    "result": "cached",
+                }
+            },
+        }
+        result = _tools_node(state)
+        assert result["messages"][0].content == "cached"
+
+
+class TestInteractionNodes:
+    def _ask_call(self):
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "ask_user",
+                    "args": {
+                        "title": "信息采集",
+                        "fields": [{"key": "name", "label": "姓名", "required": True}],
+                    },
+                    "id": "ask-1",
+                }
+            ],
+        )
+
+    def test_prepare_interaction_builds_typed_request(self):
+        result = _prepare_interaction_node({"messages": [self._ask_call()]})
+        request = result["pending_interaction"]
+        assert request["request_id"] == "interaction-ask-1"
+        assert request["tool_call_id"] == "ask-1"
+        assert request["kind"] == "form"
+        assert request["fields"][0]["key"] == "name"
+        assert _route_after_prepare_interaction(result) == "interaction"
+
+    def test_interaction_resume_returns_matching_tool_message(self, monkeypatch):
+        request = _prepare_interaction_node({"messages": [self._ask_call()]})[
+            "pending_interaction"
+        ]
+        monkeypatch.setattr(
+            "office_agent.agent.graph.interrupt",
+            lambda _payload: {"request_id": "interaction-ask-1", "answers": {"name": "张三"}},
+        )
+        result = _interaction_node({"pending_interaction": request})
+        message = result["messages"][0]
+        payload = json.loads(message.content)
+        assert message.tool_call_id == "ask-1"
+        assert payload["ok"] is True
+        assert payload["data"] == {"name": "张三"}
+        assert result["pending_interaction"] is None
+        assert result["executed_calls"]["ask-1"]["status"] == "completed"
+
+    def test_confirmation_executes_once_after_acceptance(self, monkeypatch):
+        calls = []
+
+        class FakeTool:
+            def invoke(self, args):
+                calls.append(args)
+                return "written"
+
+        monkeypatch.setattr("office_agent.agent.graph.TOOL_BY_NAME", {"danger": FakeTool()})
+        monkeypatch.setattr(
+            "office_agent.agent.graph.interrupt",
+            lambda _payload: {"accepted": True},
+        )
+        request = {
+            "request_id": "confirmation-danger-1",
+            "tool_call_id": "danger-1",
+            "tool_name": "danger",
+            "kind": "confirmation",
+            "tool_args": {"value": 1},
+        }
+        first = _interaction_node({"pending_interaction": request})
+        replay = _interaction_node(
+            {
+                "pending_interaction": request,
+                "executed_calls": first["executed_calls"],
+            }
+        )
+        assert calls == [{"value": 1}]
+        assert replay["messages"][0].tool_call_id == "danger-1"
+
+    def test_confirmation_rejection_does_not_execute(self, monkeypatch):
+        monkeypatch.setattr(
+            "office_agent.agent.graph.interrupt",
+            lambda _payload: {"accepted": False},
+        )
+        request = {
+            "request_id": "confirmation-danger-2",
+            "tool_call_id": "danger-2",
+            "tool_name": "danger",
+            "kind": "confirmation",
+            "tool_args": {},
+        }
+        result = _interaction_node({"pending_interaction": request})
+        payload = json.loads(result["messages"][0].content)
+        assert payload["code"] == "user_cancelled"
+        assert result["executed_calls"]["danger-2"]["status"] == "cancelled"
+
+    def test_compiled_graph_interrupt_and_resume(self, monkeypatch):
+        responses = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ask_user",
+                        "args": {
+                            "title": "信息采集",
+                            "fields": [{"key": "name", "label": "姓名"}],
+                        },
+                        "id": "ask-graph",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "finish",
+                        "args": {"summary": "完成"},
+                        "id": "finish-graph",
+                    }
+                ],
+            ),
+        ]
+
+        class FakeLLM:
+            def bind_tools(self, _tools):
+                return self
+
+            def invoke(self, _messages):
+                return responses.pop(0)
+
+        monkeypatch.setattr("office_agent.agent.graph.get_llm", lambda: FakeLLM())
+        graph = build_graph("out.docx")
+        config = {"configurable": {"thread_id": "interaction-test"}}
+
+        graph.invoke({"messages": [HumanMessage(content="生成文档")]}, config=config)
+        snapshot = graph.get_state(config)
+        assert snapshot.tasks[0].interrupts[0].value["tool_call_id"] == "ask-graph"
+
+        final = graph.invoke(
+            Command(
+                resume={
+                    "request_id": "interaction-ask-graph",
+                    "answers": {"name": "张三"},
+                }
+            ),
+            config=config,
+        )
+        assert final["done"] is True
+        tool_messages = [m for m in final["messages"] if isinstance(m, ToolMessage)]
+        assert any(m.tool_call_id == "ask-graph" for m in tool_messages)
+        assert any(m.tool_call_id == "finish-graph" for m in tool_messages)

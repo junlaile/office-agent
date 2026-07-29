@@ -11,16 +11,17 @@
    ↓
 [文档类型推断]（关键词 → .docx/.xlsx/.pptx，拿不准问用户）
    ↓
-[agent 节点] ←──────┐
-  DeepSeek + bind_tools(按会话类型裁剪的工具子集：通用+格式专属+控制)
+[agent 节点] ←──────────────┐
+  DeepSeek + 按文档类型 bind_tools
   系统提示词按文档类型走对应分支（Word/Excel/PPTX）
   自主决定调哪个工具
   节点边界注入忙时用户补充 / 强制打断
    ↓
-[tools 节点] ──→ 执行(officecli subprocess / interrupt / finish)
+[tools 节点] ──→ 执行(officecli subprocess / finish)
   _tool() 工厂按扩展名路由到 DocTool/ExcelTool/PptxTool
-  连续"末尾追加"类调用合并为一次 officecli batch（失败原子回滚+回退逐个）
   ToolMessage 回传
+   ↓
+[interaction 节点] ──→ interrupt / resume（表单或确认）
    ↓ (路由)
   还有 tool_calls → 回 agent
   finish / 无 tool_calls → END
@@ -33,9 +34,7 @@
 
 ## 工具集（49 个）
 
-LLM 可自主调用以下工具（无需传文件路径，由会话注入）。文档类型决定哪些工具可用——
-每个会话只把"通用 + 对应格式专属 + 控制"的子集 `bind_tools` 给 LLM（`tools_for_kind`），
-`query_vehicle` 仅在需求与车辆/交通相关时附加：
+LLM 可自主调用以下工具（无需传文件路径，由会话注入）。文档类型决定哪些工具可用：
 
 ### 通用工具（三格式共用，6 个）
 
@@ -112,21 +111,6 @@ python scripts/fetch_officecli.py
 
 自动识别 Windows/Linux/macOS + x64/arm64，下载到 `bin/`，带 SHA256 校验。
 
-下载后建议先验证：
-
-```bash
-# Windows
-.\bin\officecli.exe --version
-# Linux/macOS
-./bin/officecli --version
-```
-
-若出现 `System.Private.Xml` / `Could not load file or assembly` / `FileNotFoundException`：
-多半是 **officecli 缺少匹配的 .NET 运行时**，或下载到的发布包不完整。请：
-1. 重新执行 `python scripts/fetch_officecli.py`；
-2. Windows 上安装匹配的 [.NET Desktop Runtime](https://dotnet.microsoft.com/download)；
-3. 或设置 `OFFICECLI_BIN` 指向已知可用的 OfficeCLI 版本。
-
 > 网络受限？设置代理后重试：
 > - PowerShell: `$env:HTTPS_PROXY='http://127.0.0.1:7890'`
 > - bash: `export HTTPS_PROXY=http://127.0.0.1:7890`
@@ -174,44 +158,6 @@ uv run office-agent "做一个 10 页的产品介绍 PPT"
 | `继续` | 继续当前任务（不重新 create_doc） |
 | `退出` | 结束本次运行 |
 
-### 5. Web API（供前端对接）
-
-仅后端 API，覆盖完整对话能力（文档类型确认、Word 大纲批准、公文版头、`ask_user` / `finish` 确认含正文预览、忙时补充/强制打断、文档下载）。
-
-```bash
-uv run office-agent-api
-# 或: uv run python -m office_agent.api
-# 默认 http://0.0.0.0:8000 ；Swagger: /docs
-# RabbitMQ STOMP 模式可另启独立 worker：
-# uv run office-agent-worker
-```
-
-| 端点 | 说明 |
-|---|---|
-| `GET /health` | 健康检查（LLM / officecli） |
-| **`POST /v1/chat/completions`** | **OpenAI 兼容对话**（`stream` 可选） |
-| `GET /v1/models` | OpenAI 兼容模型列表 |
-| `WS /api/v1/ws` | 原生 WebSocket 对话主通道 |
-| `GET /api/v1/sessions/{id}` | 会话状态 |
-| `GET /api/v1/sessions/{id}/download` | 下载生成的文档 |
-
-#### OpenAI 兼容用法
-
-任意支持 OpenAI API 的客户端，将 Base URL 设为 `http://localhost:8000/v1`，模型名 `office-agent`：
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer any" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"office-agent","messages":[{"role":"user","content":"写一份项目周报"}]}'
-```
-
-多轮续接：助手回复含 `<!--office-agent-session:UUID-->`；也可传请求头 `X-Session-Id`。按提示回复「批准 / 修改… / JSON 表单」即可完成大纲、版头、`ask_user`、finish 确认。
-
-WebSocket 客户端消息：`start` / `choose_kind` / `outline_decision` / `official_header` / `resume` / `supplement` / `force` / `continue` / `quit` / `pause`。
-
-服务端事件：`session` / `need_kind` / `outline` / `need_official_header` / `agent_step` / `tool_result` / `interrupt`（含 `type=confirm_finish` 与 `content_preview`）/ `done`（含 `download_url`）/ `error` / `cancelled`。
-
 ## 配置项
 
 | 变量 | 位置 | 说明 |
@@ -221,22 +167,12 @@ WebSocket 客户端消息：`start` / `choose_kind` / `outline_decision` / `offi
 | `LLM_MODEL` | pyproject / .env | 模型名（默认 `deepseek-v4-flash`） |
 | `OFFICECLI_BIN` | .env | 二进制路径（留空自动查找） |
 | `OUTPUT_DIR` | pyproject / .env | 文档输出目录（默认 `./output`） |
-| `SESSION_BACKEND` | .env | 会话存储后端：`memory`（默认）/ `mysql` |
-| `SESSION_TTL_SECONDS` | .env | 会话 TTL（秒，默认 86400；`0` 不过期） |
-| `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE` | .env | `SESSION_BACKEND=mysql` 时生效 |
-| `TRANSPORT_MODE` | .env | 传输后端：`inproc`（默认）/ `rabbitmq_stomp` |
-| `RABBITMQ_HOST`/`RABBITMQ_PORT`/`RABBITMQ_LOGIN`/`RABBITMQ_PASSCODE`/`RABBITMQ_VHOST` | .env | `TRANSPORT_MODE=rabbitmq_stomp` 时连接配置 |
-| `STOMP_INBOUND_DESTINATION`/`STOMP_OUTBOUND_DESTINATION`/`STOMP_DLQ_DESTINATION` | .env | STOMP 收发与死信目的地 |
-| `STOMP_EXCHANGE`/`STOMP_ROUTING_KEY` | .env | exchange / routing key |
-| `STOMP_MAX_RETRIES`/`STOMP_RETRY_DELAY_MS` | .env | 失败重试次数与间隔 |
-| `STOMP_USE_MEMORY_BROKER` | .env | `1` 时用进程内 broker（无 RabbitMQ 联调） |
 
 ## 目录结构
 
 ```
 office-agent/
 ├── main.py                      # 兼容 shim → office_agent.cli.main
-├── 新增office模版的说明.md        # 怎么加一个新公文模板
 ├── scripts/
 │   ├── fetch_officecli.py       # 跨平台下载 officecli
 │   └── gen_official_templates.py # 生成 15 文种公文模板（GB/T 9704）
@@ -250,12 +186,6 @@ office-agent/
 │   │   ├── main.py              # run() 编排 + UserInputBridge 生命周期
 │   │   ├── ui.py                # 终端 UI / interrupt 表单
 │   │   └── user_input.py        # 忙时输入桥（补充/强制/继续/退出）
-│   ├── session/                 # CLI/API 共用会话编排
-│   │   ├── prep.py              # 路径/版头/模板 merge（无 UI）
-│   │   └── runner.py            # AgentSession 状态机
-│   ├── api/                     # FastAPI WebSocket + 下载
-│   │   ├── app.py               # 路由与 WS 协议
-│   │   └── manager.py           # 进程内会话表
 │   ├── office/                  # OfficeCLI 实现层
 │   │   ├── runner.py            # subprocess 执行器 + merge_template
 │   │   ├── doc.py / excel.py / pptx.py   # DocTool / ExcelTool / PptxTool
@@ -264,7 +194,7 @@ office-agent/
 │   │   ├── format.py            # Office 格式推断（docx/xlsx/pptx）
 │   │   └── vehicle_data.py      # 车辆查询 mock
 │   └── tools/                   # @tool 工具集包
-│       ├── __init__.py          # 会话基础设施 + ALL_TOOLS 聚合
+│       ├── __init__.py          # 会话基础设施 + ToolRegistry 注册
 │       ├── common.py / doc.py / excel.py / pptx.py
 ├── template/word/               # 15 文种公文模板（GB/T 9704）
 ├── tests/                       # 测试套件（pytest）
@@ -280,7 +210,7 @@ office-agent/
 
 - **DeepSeek tool_calls**：`llm.bind_tools(tools)`；不强制 `tool_choice`，不用 `response_format`（thinking 模式冲突）。
 - **Word 大纲预览门控**：写 `.docx` 前用无工具 LLM 生成 Markdown 大纲；用户批准后才 `_prepare_official_doc` / `create_doc`。
-- **手写 tools 节点**：比内置 `ToolNode` 灵活，能处理 `ask_user` 的 `interrupt` 挂起和 `finish` 的短路完成。
+- **分层工具执行**：普通工具由 `tools` 节点执行，交互工具由独立 `interaction` 节点挂起/恢复；元数据注册表统一控制文档类型、批处理和副作用策略。
 - **会话级 doc_path 注入**：启动时按需求推断文档类型和输出路径，所有工具共享，LLM 不需传路径参数。
 - **扩展名路由**：`tools._tool()` 工厂按 `.docx/.xlsx/.pptx` 后缀返回对应 Tool 类；通用工具跨格式，专属工具在其他格式下给出明确引导。
 - **公文模式**：识别 15 法定文种 → 从 GB/T 9704 模板创建 → LLM 用 update_paragraph/replace_text/remove_paragraph 编辑正文（保字体）。
@@ -326,9 +256,10 @@ uv run mypy src/            # 类型检查
 
 ### 扩展
 
-- **新增公文模板**（加一个文种）：见[《新增office模版的说明.md》](新增office模版的说明.md)。只需在 `domain/templates.py` 的注册表登记 + 在 `scripts/gen_official_templates.py` 写正文范例，其余（文件名、提示词文种清单/结语、工具描述、测试）自动派生。
-- 如需更多 officecli 能力（条件格式、数据透视表、幻灯片切换动画、SmartArt 等），在 `office/doc.py` / `excel.py` / `pptx.py` 对应类加方法 + `tools/doc.py` / `excel.py` / `pptx.py` 加 `@tool`。命令面参考 `officecli help <format> <element>`。
-- 接 Web UI：使用 `session.AgentSession` + `api` WebSocket 协议；前端只需实现事件驱动的对话页。
+- 新增普通工具：在 `office/doc.py` / `excel.py` / `pptx.py` 加底层方法，在对应 `tools/*.py` 加 `@tool`，再向 `tools/__init__.py` 的 `TOOL_SPECS` 注册 `document_kinds`、`side_effect` 和批处理策略。
+- 新增交互工具：工具函数只返回 `{title, description, fields}` 请求，在 `ToolSpec` 中设 `execution_mode=INTERACTION, can_batch=False`；Graph 会自动独占调用并负责 interrupt/resume。
+- 新增需确认的副作用工具：工具函数实现确认后的实际写操作，在 `ToolSpec` 中设 `execution_mode=CONFIRMATION, can_batch=False`；Graph 会先展示参数预览，用户确认后才调用。
+- 接 Web UI：实现 `InteractionAdapter.collect()` 并把结构化 `InteractionRequest` / `InteractionResponse` 接到 WebSocket 或 HTTP，无需修改工具函数。
 
 ## 许可
 

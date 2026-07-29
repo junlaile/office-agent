@@ -8,7 +8,6 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from langchain_core.tools import tool
-from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
 from office_agent.domain.templates import (
@@ -447,19 +446,12 @@ def ask_user(
         fields: 字段列表（1-8 个）。
         description: 卡片说明（可选，简短解释为何需要这些信息）。
 
-    返回: dict，key 是字段 key，value 是用户输入（候选选项已映射为文本）。"""
-    payload = {
+    返回: 结构化交互请求。Graph 会挂起并把用户答案以 dict 形式回传给 Agent。"""
+    return {
         "title": title,
         "description": description,
         "fields": [f.model_dump() for f in fields],
     }
-    # interrupt 挂起执行；main.py 收集用户输入后 Command(resume=dict) 恢复，
-    # resume 的 dict 会作为本函数的返回值传回给 agent。
-    answer = interrupt(payload)
-    # 兜底：旧版可能返回 str，统一成 dict
-    if isinstance(answer, str):
-        return {"value": answer.strip()} if answer.strip() else {}
-    return answer if isinstance(answer, dict) else {}
 
 
 def _content_preview_for_confirm(max_chars: int = 2500) -> str:
