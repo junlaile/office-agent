@@ -1,4 +1,23 @@
-"""RabbitMQ STOMP 桥接（Gateway + Worker，含重试与 DLQ）。"""
+"""RabbitMQ STOMP 桥接（Gateway + Worker，含重试与 DLQ）。
+
+TRANSPORT_MODE=rabbitmq_stomp 时的消息路径:
+
+    WebSocket 客户端
+        │ (Gateway: app.py 收到消息后 publish_inbound)
+        ▼
+    inbound 队列 ──▶ SessionWorker（process_next / run_forever）
+        │                 │ 处理失败:按 STOMP_MAX_RETRIES 重试，
+        │                 │ 超限后写入 DLQ 并回推错误事件
+        ▼                 ▼
+    outbound 队列 ◀── process_envelope 产出的事件
+        │ (Gateway: consume_outbound 拉取后经 WebSocket 推给客户端)
+        ▼
+    WebSocket 客户端
+
+两种 broker 实现:
+    - StompBrokerClient: 真实 RabbitMQ STOMP 连接（需要 stomp.py）
+    - MemoryBroker:      进程内队列模拟，供单测与无 RabbitMQ 联调
+"""
 
 from __future__ import annotations
 
@@ -21,6 +40,8 @@ logger = get_logger(__name__)
 
 @dataclass
 class StompConfig:
+    """STOMP 连接与队列配置（由 settings 的 RABBITMQ_*/STOMP_* 组装）。"""
+
     host: str
     port: int
     login: str
@@ -38,6 +59,8 @@ class StompConfig:
 
 
 class BrokerClient(Protocol):
+    """broker 最小抽象:只需要"发消息"和"断开"两个能力。"""
+
     def send(self, destination: str, body: str, headers: dict[str, str]) -> None: ...
     def disconnect(self) -> None: ...
 
@@ -52,6 +75,7 @@ class MemoryBroker:
         self.sent: list[tuple[str, str, dict[str, str]]] = []
 
     def send(self, destination: str, body: str, headers: dict[str, str]) -> None:
+        """按目的地名称路由到对应内存队列（dlq / outbound / inbound）。"""
         self.sent.append((destination, body, headers))
         dest = destination.lower()
         if dest.endswith(".dlq") or "/dlq" in dest or dest.endswith("dlq"):
@@ -72,7 +96,10 @@ class MemoryBroker:
 
 
 class StompBrokerClient:
+    """真实 RabbitMQ STOMP 客户端（薄封装 stomp.py 的 Connection12）。"""
+
     def __init__(self, cfg: StompConfig) -> None:
+        # stomp.py 是可选依赖:只有启用 rabbitmq_stomp 模式时才要求安装
         try:
             import stomp
         except ImportError as e:  # pragma: no cover
@@ -97,6 +124,8 @@ class StompBrokerClient:
 
 @dataclass
 class PendingMessage:
+    """待消费的入站消息:信封 + 已重试次数 + 原始 STOMP 头。"""
+
     envelope: MessageEnvelope
     attempt: int = 0
     headers: dict[str, str] = field(default_factory=dict)
@@ -108,7 +137,9 @@ class StompBrokerBridge:
     def __init__(self, cfg: StompConfig, broker: BrokerClient | None = None) -> None:
         self._cfg = cfg
         self._lock = threading.Lock()
+        # 真实 STOMP 模式下同进程 embed worker 的本地待消费队列
         self._pending: queue.Queue[PendingMessage] = queue.Queue()
+        # 真实 STOMP 模式下按 session 分桶的本地出站队列（供 Gateway 拉取）
         self._outbound_local: dict[str, queue.Queue[dict[str, Any]]] = defaultdict(
             queue.Queue
         )
@@ -121,6 +152,7 @@ class StompBrokerBridge:
         return StompBrokerClient(self._cfg)
 
     def publish_inbound(self, envelope: MessageEnvelope) -> None:
+        """Gateway 侧:把客户端消息发布到 inbound 队列（持久化投递）。"""
         headers = {
             "persistent": "true",
             "content-type": "application/json",
@@ -165,6 +197,7 @@ class StompBrokerBridge:
                 time.sleep(poll_interval_s)
 
     def _take_pending(self) -> PendingMessage | None:
+        """取一条待处理消息;memory broker 从 inbound 队列拉，否则用本地 pending。"""
         if self._memory and isinstance(self._broker, MemoryBroker):
             try:
                 body, headers = self._broker.inbound.get_nowait()
@@ -179,6 +212,7 @@ class StompBrokerBridge:
             return None
 
     def _handle_pending(self, pending: PendingMessage) -> bool:
+        """处理一条消息:成功则把事件写出站队列，失败走重试/DLQ。"""
         envelope = pending.envelope
         sid = envelope.session_id
         try:
@@ -210,6 +244,7 @@ class StompBrokerBridge:
         return True
 
     def _retry_or_dlq(self, pending: PendingMessage, *, error: str) -> bool:
+        """失败处理:未超过重试上限则延迟后重新入队，否则写 DLQ 并回推错误事件。"""
         next_attempt = pending.attempt + 1
         if next_attempt <= self._cfg.max_retries:
             delay = self._cfg.retry_delay_ms / 1000.0
@@ -279,12 +314,14 @@ class StompBrokerBridge:
     async def consume_outbound(
         self, session_id: str, timeout_s: float = 0.5
     ) -> list[dict[str, Any]]:
+        """Gateway 侧:拉取指定会话的出站事件（阻塞取放到线程池以免卡事件循环）。"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, self._drain_outbound, session_id, timeout_s
         )
 
     def _drain_outbound(self, session_id: str, timeout_s: float) -> list[dict[str, Any]]:
+        """排空会话的出站队列:第一条最多等 timeout_s，其余立即取完。"""
         if self._memory and isinstance(self._broker, MemoryBroker):
             q = self._broker.outbound[session_id]
         else:
@@ -310,6 +347,7 @@ class StompBrokerBridge:
 
 
 def build_stomp_config() -> StompConfig:
+    """从全局 settings 组装 STOMP 配置。"""
     return StompConfig(
         host=settings.rabbitmq_host,
         port=settings.rabbitmq_port,
@@ -329,4 +367,5 @@ def build_stomp_config() -> StompConfig:
 
 
 def build_stomp_bridge() -> StompBrokerBridge:
+    """构建桥接实例（app.py 的 rabbitmq_stomp 模式与独立 worker 共用）。"""
     return StompBrokerBridge(build_stomp_config())

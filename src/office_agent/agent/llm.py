@@ -11,9 +11,14 @@ from office_agent.config import settings
 
 
 def get_llm(*, streaming: bool = False) -> ChatOpenAI:
-    """构造一个 ChatOpenAI 实例。"""
+    """构造一个 ChatOpenAI 实例。
+
+    Args:
+        streaming: 是否启用流式输出（SSE 场景传 True）。
+    """
     from pydantic import SecretStr
 
+    # api_key 用 SecretStr 包装，避免日志/repr 意外泄露明文密钥
     return ChatOpenAI(
         base_url=settings.llm_base_url,
         api_key=SecretStr(settings.llm_api_key),

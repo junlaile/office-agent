@@ -1,4 +1,17 @@
-"""会话存储后端（内存 / MySQL），含 TTL 与消息幂等。"""
+"""会话存储后端（内存 / MySQL），含 TTL 与消息幂等。
+
+提供两个实现:
+    - InMemorySessionStore: 进程内字典存储，零依赖，适合单机开发/测试。
+    - MySQLSessionStore:   会话快照持久化到 MySQL，进程重启/多 Worker 场景
+      可恢复会话；同时用独立表记录已处理消息实现"至少一次投递"下的幂等。
+
+设计取舍:
+    - 只持久化可序列化的"快照"字段（SessionSnapshot），LangGraph 的
+      运行时状态（内存 checkpointer）不落库——跨进程恢复的会话会丢失
+      图执行进度，只能基于快照字段继续对话。
+    - MySQL 后端每次操作都新建连接（autocommit），牺牲一点性能换实现
+      简单与无连接池状态；量大时可再引入连接池。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +30,8 @@ logger = get_logger(__name__)
 
 
 class SessionStore(Protocol):
+    """会话存储协议:注册/查询/删除 + 消息幂等去重。"""
+
     def register(self, session: AgentSession) -> AgentSession: ...
     def get(self, session_id: str) -> AgentSession | None: ...
     def remove(self, session_id: str) -> None: ...
@@ -32,6 +47,8 @@ class SessionStore(Protocol):
 
 @dataclass
 class SessionSnapshot:
+    """AgentSession 的可序列化快照（仅业务字段，不含 LangGraph 运行时状态）。"""
+
     session_id: str
     phase: str
     requirement: str
@@ -47,6 +64,7 @@ class SessionSnapshot:
 
 
 def _to_snapshot(session: AgentSession) -> SessionSnapshot:
+    """把运行中的会话转成快照；TTL=0 表示永不过期。"""
     ttl = max(0, int(settings.session_ttl_seconds))
     expires_at = (time.time() + ttl) if ttl else None
     version = int(getattr(session, "session_version", 0) or 0)
@@ -67,6 +85,7 @@ def _to_snapshot(session: AgentSession) -> SessionSnapshot:
 
 
 def _from_snapshot(snapshot: SessionSnapshot) -> AgentSession:
+    """从快照重建会话对象（跨进程恢复时使用）。"""
     session = AgentSession(session_id=snapshot.session_id)
     try:
         session.phase = SessionPhase(snapshot.phase)
@@ -87,9 +106,13 @@ def _from_snapshot(snapshot: SessionSnapshot) -> AgentSession:
 
 
 class InMemorySessionStore:
+    """进程内会话存储:dict + 锁，get 时惰性清理过期会话。"""
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        # session_id -> (会话对象, 过期时间戳或 None=永不过期)
         self._sessions: dict[str, tuple[AgentSession, float | None]] = {}
+        # 已处理消息集合 (session_id, message_id)，用于幂等去重
         self._processed: set[tuple[str, str]] = set()
 
     def register(self, session: AgentSession) -> AgentSession:
@@ -104,6 +127,7 @@ class InMemorySessionStore:
             if item is None:
                 return None
             session, expires_at = item
+            # 惰性过期:读到已过期的会话时顺手删除
             if expires_at is not None and time.time() > expires_at:
                 self._sessions.pop(session_id, None)
                 return None
@@ -129,6 +153,11 @@ class InMemorySessionStore:
 
 
 class MySQLSessionStore:
+    """MySQL 会话存储:快照存 JSON 列，消息幂等记录存独立表。
+
+    初始化时自动建表（CREATE TABLE IF NOT EXISTS），无需手工迁移。
+    """
+
     TABLE_NAME = "office_agent_sessions"
     MSG_TABLE = "office_agent_processed_messages"
 
@@ -138,6 +167,7 @@ class MySQLSessionStore:
         self._ensure_schema()
 
     def _import_driver(self):  # type: ignore[no-untyped-def]
+        # pymysql 是可选依赖:只有选用 mysql 后端时才要求安装
         try:
             import pymysql
         except ImportError as e:  # pragma: no cover
@@ -145,6 +175,7 @@ class MySQLSessionStore:
         return pymysql
 
     def _connect(self):  # type: ignore[no-untyped-def]
+        """建立 MySQL 连接;MYSQL_DSN 中的字段优先于 MYSQL_HOST 等零散配置。"""
         cfg = {
             "host": settings.mysql_host,
             "port": settings.mysql_port,
@@ -153,6 +184,7 @@ class MySQLSessionStore:
             "database": settings.mysql_database,
         }
         if self._dsn:
+            # DSN 形如 mysql://user:pass@host:3306/dbname，逐字段覆盖默认配置
             parsed = urlparse(self._dsn)
             if parsed.hostname:
                 cfg["host"] = parsed.hostname
@@ -179,6 +211,7 @@ class MySQLSessionStore:
         )
 
     def _ensure_schema(self) -> None:
+        """幂等建表:会话快照表 + 已处理消息表。"""
         session_sql = f"""
         CREATE TABLE IF NOT EXISTS {self.TABLE_NAME} (
             session_id VARCHAR(64) PRIMARY KEY,
@@ -204,6 +237,7 @@ class MySQLSessionStore:
                 cur.execute(msg_sql)
 
     def register(self, session: AgentSession) -> AgentSession:
+        """插入或更新会话快照（UPSERT），同时刷新过期时间。"""
         snap = _to_snapshot(session)
         payload = json.dumps(asdict(snap), ensure_ascii=False)
         expires_at = (
@@ -236,8 +270,9 @@ class MySQLSessionStore:
             return None
         raw, expires_at = row[0], row[1]
         if expires_at is not None:
-            # pymysql may return datetime
+            # pymysql 可能把 TIMESTAMP 列返回为 datetime 对象
             ts = expires_at.timestamp() if hasattr(expires_at, "timestamp") else None
+            # 惰性过期:读到已过期的会话时顺手删除
             if ts is not None and time.time() > ts:
                 self.remove(session_id)
                 return None
@@ -268,6 +303,7 @@ class MySQLSessionStore:
     def mark_message_processed(
         self, *, session_id: str, message_id: str, session_version: int
     ) -> None:
+        # INSERT IGNORE:并发重复标记时静默跳过（主键去重）
         sql = f"""
         INSERT IGNORE INTO {self.MSG_TABLE}
             (session_id, message_id, session_version)
@@ -279,10 +315,12 @@ class MySQLSessionStore:
 
 
 def build_session_store() -> SessionStore:
+    """按 SESSION_BACKEND 构建存储后端;MySQL 初始化失败时降级到内存存储。"""
     backend = settings.session_backend.strip().lower()
     if backend == "mysql":
         try:
             return MySQLSessionStore(settings.mysql_dsn)
         except Exception:  # noqa: BLE001
+            # 连接失败/驱动缺失等都不阻塞启动，降级为内存存储并记录日志
             logger.exception("MySQL 会话存储初始化失败，回退内存存储")
     return InMemorySessionStore()

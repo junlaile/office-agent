@@ -1,4 +1,16 @@
-"""FastAPI 应用：健康检查、会话查询、文档下载、WebSocket 对话。"""
+"""FastAPI 应用：健康检查、会话查询、文档下载、WebSocket 对话。
+
+对外暴露两套接口:
+    - OpenAI 兼容:``/v1/models``、``/v1/chat/completions``（支持 stream），
+      供现成的 OpenAI 客户端/前端直接接入。
+    - 原生 WebSocket:``/api/v1/ws``，全双工事件流，支持大纲批准、
+      忙时补充、ask_user 追问等交互式流程。
+
+传输模式由 TRANSPORT_MODE 决定:
+    - inproc（默认）:消息在本进程内直接交给会话状态机处理。
+    - rabbitmq_stomp:消息经 STOMP 队列走"Gateway → Worker"路径
+      （见 stomp_bridge.py），失败时自动回退 inproc。
+"""
 
 from __future__ import annotations
 
@@ -31,6 +43,7 @@ logger = get_logger(__name__)
 
 
 def create_app() -> FastAPI:
+    """构建 FastAPI 应用并注册全部路由（模块底部创建单例 ``app``）。"""
     setup_logging()
     app = FastAPI(
         title="Office Agent API",
@@ -53,6 +66,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, Any]:
+        """健康检查:返回 LLM/officecli/传输/存储的就绪状态。"""
         officecli_ok = False
         officecli_path = ""
         try:
@@ -71,6 +85,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/sessions/{session_id}")
     def get_session(session_id: str) -> dict[str, Any]:
+        """查询会话状态;文档已生成时附带下载链接。"""
         session = session_manager.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="session not found")
@@ -92,6 +107,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/sessions/{session_id}/download")
     def download(session_id: str) -> FileResponse:
+        """下载会话生成的文档（限制在输出目录内，防路径穿越）。"""
         session = session_manager.get(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="session not found")
@@ -120,6 +136,7 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/models/{model_id}")
     def get_model(model_id: str) -> dict[str, Any]:
+        """OpenAI 兼容：查询单个模型。"""
         data = models_list_response()["data"]
         for m in data:
             if m["id"] == model_id:
@@ -182,9 +199,19 @@ def create_app() -> FastAPI:
 
     @app.websocket("/api/v1/ws")
     async def websocket_chat(ws: WebSocket) -> None:
+        """WebSocket 对话主循环。
+
+        协议约定:
+            - 首条消息必须是 ``{type:start, requirement:...}``（可带
+              session_id 重连已有会话）;
+            - 后续消息（supplement/approve 等）交给会话状态机;
+            - ``{type:ping}`` 心跳直接回 pong;
+            - 一条连接只绑定一个会话，重开会话需新建连接。
+        """
         await ws.accept()
         transport: TransportAdapter = InProcessWebSocketTransport(ws)
         stomp_bridge = None
+        # rabbitmq_stomp 模式:消息走 STOMP 队列;初始化失败回退 inproc
         if app_config.settings.transport_mode == "rabbitmq_stomp":
             try:
                 stomp_bridge = build_stomp_bridge()
@@ -213,6 +240,7 @@ def create_app() -> FastAPI:
                     await transport.send({"type": "pong"})
                     continue
 
+                # 连接尚未绑定会话:只接受 start 消息（新建或重连）
                 if session is None:
                     if msg_type != "start":
                         await transport.send(
@@ -222,6 +250,7 @@ def create_app() -> FastAPI:
                             }
                         )
                         continue
+                    # 带 session_id 且能查到:按重连处理，返回当前状态
                     requested_sid = str(message.get("session_id") or "").strip()
                     existing = (
                         session_manager.get(requested_sid) if requested_sid else None
@@ -311,6 +340,12 @@ async def _dispatch_message(
     transport: TransportAdapter,
     stomp_bridge: Any,
 ) -> list[dict[str, Any]]:
+    """分发一条客户端消息，返回待推送事件。
+
+    inproc 模式直接调用会话状态机（放到线程池避免阻塞事件循环）;
+    rabbitmq_stomp 模式发布到 inbound 队列、驱动 worker 消费一条、
+    再从 outbound 队列拉回事件。
+    """
     _ = transport
     if stomp_bridge is None:
         if message.get("type") == "start":
@@ -339,6 +374,7 @@ async def _dispatch_message(
 
 
 def _session_reconnected_event(session: AgentSession) -> dict[str, Any]:
+    """重连事件:把会话当前状态一次性推给客户端。"""
     return {
         "type": "session",
         "session_id": session.session_id,
@@ -353,6 +389,7 @@ def _session_reconnected_event(session: AgentSession) -> dict[str, Any]:
 
 
 def _cors_origins() -> list[str]:
+    """解析 API_CORS_ORIGINS（逗号分隔），默认放开全部来源。"""
     import os
 
     raw = os.environ.get("API_CORS_ORIGINS", "*").strip()
@@ -362,6 +399,7 @@ def _cors_origins() -> list[str]:
 
 
 def _media_type(suffix: str) -> str:
+    """按扩展名映射 Office 文档的 MIME 类型，未知类型按二进制流。"""
     return {
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
