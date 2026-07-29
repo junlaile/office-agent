@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import logging
 import threading
 import uuid
 from collections.abc import Iterator
@@ -29,6 +28,7 @@ from office_agent.cli.user_input import (
 from office_agent.config import settings
 from office_agent.domain.templates import detect_doc_type
 from office_agent.domain.vehicle_data import is_vehicle_related
+from office_agent.log import get_logger
 from office_agent.session.interrupt_util import pending_interrupt
 from office_agent.session.prep import (
     build_doc_path,
@@ -38,7 +38,7 @@ from office_agent.session.prep import (
 )
 from office_agent.tools import set_session_doc
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 工具层 ``set_session_doc`` 有进程级回退；同进程多会话时串行执行 graph 步骤。
 _EXEC_LOCK = threading.Lock()

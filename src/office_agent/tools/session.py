@@ -15,15 +15,15 @@ main.py 在启动 agent 前调用 ``set_session_doc(path)``；所有 @tool 工�
 
 from __future__ import annotations
 
-import logging
 from contextvars import ContextVar
 
+from office_agent.log import get_logger
 from office_agent.office.doc import DocTool
 from office_agent.office.excel import ExcelTool
 from office_agent.office.pptx import PptxTool
 from office_agent.office.runner import OfficeCLIError
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _doc_path_var: ContextVar[str | None] = ContextVar("session_doc_path", default=None)
 _default_doc_path: str | None = None

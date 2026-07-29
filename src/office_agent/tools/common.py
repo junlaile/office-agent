@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -16,6 +15,7 @@ from office_agent.domain.templates import (
     template_exists,
     template_path,
 )
+from office_agent.log import get_logger
 from office_agent.officecli import (
     OfficeCLIError,
     merge_template,
@@ -29,7 +29,7 @@ from office_agent.tools.session import (
     session_doc_path,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # 图片来源预校验超时（秒）。仅用于 HEAD 探测 URL 是否可达，不影响 officecli 实际下载。

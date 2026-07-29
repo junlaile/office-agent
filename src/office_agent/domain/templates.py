@@ -26,11 +26,12 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from office_agent.log import get_logger
+
+logger = get_logger(__name__)
 
 # 工程根：<root>/src/office_agent/domain/templates.py → parents[3]
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[3]

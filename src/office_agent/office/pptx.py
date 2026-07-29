@@ -8,13 +8,14 @@ shape 路径优先用 add 返回的 ``/slide[N]/shape[@id=ID]``（positional /sh
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass
 from typing import Any
 
+from office_agent.log import get_logger
+
 from .runner import OfficeCLIError, get_runner, last_child_index, props_args
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

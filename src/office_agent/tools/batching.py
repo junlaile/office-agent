@@ -20,16 +20,16 @@ add_slide × N）。逐个执行时每个调用一个 subprocess，且 officecli
 from __future__ import annotations
 
 import json
-import logging
 from typing import Any
 
+from office_agent.log import get_logger
 from office_agent.office.doc import DocTool
 from office_agent.office.pptx import PptxTool
 from office_agent.office.runner import OfficeCLIError, get_runner
 
 from .session import session_doc_kind, session_doc_path
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 最近一次 batch 失败原因；graph 回退后读取并标注到 ToolMessage，随后清空。
 _LAST_BATCH_FALLBACK_REASON: str | None = None

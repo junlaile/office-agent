@@ -8,14 +8,15 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from office_agent.log import get_logger
+
 from .runner import OfficeCLIError, get_runner
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _col_to_letter(n: int) -> str:

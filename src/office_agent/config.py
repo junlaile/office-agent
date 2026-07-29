@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import tomllib
 from dataclasses import dataclass
@@ -87,6 +86,7 @@ class Settings:
 
     # 日志
     log_level: str  # DEBUG/INFO/WARNING/ERROR
+    log_file: str  # 可空:非空时额外写入轮转日志文件（见 office_agent.log）
 
     @property
     def project_root(self) -> Path:
@@ -173,27 +173,12 @@ def _load() -> Settings:
         stomp_use_memory_broker=env("STOMP_USE_MEMORY_BROKER", "").lower()
         in ("1", "true", "yes"),
         log_level=env("LOG_LEVEL", "INFO"),
+        log_file=env("LOG_FILE", ""),
     )
 
 
 # 模块级单例：import 一次即生效
 settings = _load()
-
-
-def setup_logging() -> None:
-    """按 settings.log_level 配置 root logger。
-
-    幂等：重复调用不会叠加 handler（basicConfig 已自带此保证）。
-    由 CLI 入口（cli.main.run）显式调用——不在 import 时自动执行，
-    避免"import 本包就改掉宿主进程的全局日志配置"这种副作用。
-    """
-    level_name = settings.log_level.strip().upper()
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
 
 def assert_llm_ready() -> None:

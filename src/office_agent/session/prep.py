@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from datetime import datetime
 from typing import Any
@@ -14,10 +13,11 @@ from office_agent.domain.templates import (
     is_upward,
     template_path,
 )
+from office_agent.log import get_logger
 from office_agent.office.doc import DocTool
 from office_agent.officecli import OfficeCLIError, merge_template
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def resolve_output_kind(
