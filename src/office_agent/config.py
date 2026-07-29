@@ -52,7 +52,7 @@ class Settings:
     output_dir: Path
 
     # Agent
-    recursion_limit: int  # LangGraph 超级步上限（agent↔tools 往返算 2 步）
+    recursion_limit: int  # LangGraph 超级步上限（agent↔tools 往返算 2 步；默认 200）
 
     # Session store
     session_backend: str  # memory/mysql
@@ -138,7 +138,8 @@ def _load() -> Settings:
         officecli_bin=env("OFFICECLI_BIN", ""),
         officecli_timeout=int_env("OFFICECLI_TIMEOUT", 120),
         output_dir=output_dir,
-        recursion_limit=int_env("RECURSION_LIMIT", 100),
+        # 约 100 轮 agent↔tools；长文档（调查报告等）在 100 步时常打满未 finish。
+        recursion_limit=int_env("RECURSION_LIMIT", 200),
         session_backend=env("SESSION_BACKEND", "memory"),
         session_ttl_seconds=int_env("SESSION_TTL_SECONDS", 86400),
         mysql_dsn=env("MYSQL_DSN", ""),

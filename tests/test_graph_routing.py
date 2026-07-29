@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.errors import GraphBubbleUp, GraphInterrupt
 from langgraph.graph import END
 from langgraph.types import Command
 
@@ -253,6 +255,22 @@ class TestToolsNode:
         assert not result.get("done")
         assert "请补充结论段" in result["messages"][0].content
 
+    def test_finish_propagates_graph_interrupt(self, monkeypatch):
+        """finish 的 confirm_finish interrupt 必须向上冒泡，不能被吞成 done=True。"""
+
+        def raise_interrupt(payload):
+            assert payload.get("type") == "confirm_finish"
+            raise GraphInterrupt(())
+
+        monkeypatch.setattr("office_agent.tools.common.interrupt", raise_interrupt)
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "预览",
+        )
+        ai = self._ai_with_calls([{"name": "finish", "args": {"summary": "待确认"}, "id": "f1"}])
+        with pytest.raises(GraphBubbleUp):
+            _tools_node({"messages": [ai]})
+
     def test_unknown_tool_returns_error_message(self):
         """未知工具 → 错误 ToolMessage（不崩溃）。"""
         ai = self._ai_with_calls([{"name": "不存在的工具", "args": {}, "id": "u1"}])
@@ -448,13 +466,26 @@ class TestInteractionNodes:
         snapshot = graph.get_state(config)
         assert snapshot.tasks[0].interrupts[0].value["tool_call_id"] == "ask-graph"
 
-        final = graph.invoke(
+        # resume ask_user 后会进入 finish，需再确认文档内容
+        monkeypatch.setattr(
+            "office_agent.tools.common._content_preview_for_confirm",
+            lambda max_chars=2500: "预览正文",
+        )
+        graph.invoke(
             Command(
                 resume={
                     "request_id": "interaction-ask-graph",
                     "answers": {"name": "张三"},
                 }
             ),
+            config=config,
+        )
+        snapshot = graph.get_state(config)
+        confirm_payload = snapshot.tasks[0].interrupts[0].value
+        assert confirm_payload["type"] == "confirm_finish"
+
+        final = graph.invoke(
+            Command(resume={"decision": "确认生成", "feedback": ""}),
             config=config,
         )
         assert final["done"] is True

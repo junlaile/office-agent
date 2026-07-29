@@ -251,26 +251,14 @@ def _tools_node(state: AgentState) -> dict[str, Any]:
             return
 
         status: Literal["completed", "cancelled", "failed"] = "completed"
-        if name == "finish":
-            try:
-                result = tool.invoke(args)
-            except GraphBubbleUp:
-                # finish 在部分流程中走独立确认节点；若工具层仍触发 interrupt，
-                # 这里兼容为“确认通过”，避免再追加一次 resume。
-                result = f"FINISHED:{args.get('summary', '')}"
-            except Exception as e:  # noqa: BLE001
-                logger.exception("工具 %s 执行失败", name)
-                result = f"工具执行出错({name}): {e}"
-                status = "failed"
-        else:
-            try:
-                result = tool.invoke(args)
-            except GraphBubbleUp:
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.exception("工具 %s 执行失败", name)
-                result = f"工具执行出错({name}): {e}"
-                status = "failed"
+        try:
+            result = tool.invoke(args)
+        except GraphBubbleUp:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.exception("工具 %s 执行失败", name)
+            result = f"工具执行出错({name}): {e}"
+            status = "failed"
         result_str = str(result)
         if name == "finish" and status == "completed":
             if result_str.startswith("FINISHED:"):

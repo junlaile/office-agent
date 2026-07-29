@@ -393,40 +393,53 @@ class DocTool:
         return self.runner.run(["validate", self.doc_path])
 
     # ---- 目录 ----
-    def _clear_updatefields(self) -> None:
-        """清除 settings.xml 中的 ``<w:updateFields .../>``，避免打开 Word 弹域更新窗。
+    def _ensure_updatefields(self) -> None:
+        """确保 settings.xml 的 ``<w:updateFields w:val="true"/>`` 正确写入。
 
-        ``updateFields=true`` 会触发中文 Word「该文档包含的域可能引用了其它文件」
-        提示。交付文档时主动删掉该标志：打开不再弹窗；TOC 域仍保留，用户可
-        右键目录 / F9 手动刷新。幂等；失败只记日志不抛。
+        officecli 的 ``set / --prop updateFields=true`` 产出的是
+        ``<w:updateFields />``（无 ``w:val`` 属性），按 OOXML 规范缺省 ``w:val``
+        等同 false，Word 打开时不会提示刷新域 → 目录停留在占位文本
+        "Update field to see table of contents"。
+
+        本方法后处理 settings.xml：把无 ``w:val`` 的标签补成 ``w:val="true"``；
+        标签不存在则在 ``<w:settings ...>`` 开头插入。幂等（已正确则不动）。
+        失败（zip 读写/正则异常）只记日志不抛——目录仍可用，只是需手动 F9 刷新。
         """
         try:
             with zipfile.ZipFile(self.doc_path, "r") as zin:
                 if "word/settings.xml" not in zin.namelist():
                     return
                 xml = zin.read("word/settings.xml").decode("utf-8")
-                if "<w:updateFields" not in xml:
+                # 已有正确的 val="true" 标签 → 无需改
+                if re.search(r'<w:updateFields\s+w:val="true"\s*/?>', xml):
                     return
-                new_xml, n = re.subn(r"<w:updateFields\b[^>]*/>", "", xml)
+                # 有 updateFields 但无 val（或缺 val="true"）→ 补 val="true"
+                new_xml, n = re.subn(
+                    r"<w:updateFields\s*/>", '<w:updateFields w:val="true"/>', xml
+                )
                 if n == 0:
-                    # 偶发非自闭合写法
+                    # 整个标签不存在 → 在 <w:settings ...> 开标签后插入
                     new_xml, n = re.subn(
-                        r"<w:updateFields\b[^>]*>\s*</w:updateFields>",
-                        "",
+                        r"(<w:settings\b[^>]*>)",
+                        r'\1<w:updateFields w:val="true"/>',
                         xml,
+                        count=1,
                     )
-                if n == 0 or new_xml == xml:
-                    return
+                    if n == 0:
+                        return  # 连 <w:settings> 都没有，放弃
+                # 重写整个 zip（zip 不支持原地改单文件）
                 tmp = self.doc_path + ".tmp"
                 with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
                     for item in zin.infolist():
+                        # 跳过原 settings.xml，下面用修改后的覆盖（避免重名孤儿条目）
                         if item.filename == "word/settings.xml":
                             continue
                         zout.writestr(item, zin.read(item.filename))
                     zout.writestr("word/settings.xml", new_xml.encode("utf-8"))
+            # 原子替换
             Path(tmp).replace(self.doc_path)
         except Exception as e:  # noqa: BLE001
-            logger.warning("清除 updateFields 失败（不影响主流程）: %s", e)
+            logger.warning("updateFields 后处理失败（不影响主流程，目录需手动刷新）: %s", e)
 
     def add_toc(
         self,
@@ -444,10 +457,9 @@ class DocTool:
             hyperlinks: 条目是否可点击跳转。
             page_numbers: 是否显示页码。
 
-        注意: TOC 是 Word 域。为避免打开文档时弹出「是否更新域」提示，本方法会
-        清除 ``updateFields`` 标志；若目录仍显示占位文本，可在 Word 中右键目录
-        → 更新域 / 按 F9 手动刷新。前提：标题用 add_heading 添加（它设了
-        outlineLvl，TOC 才收得到）。
+        注意: TOC 是 Word 域，真实条目在 Word 打开时刷新（会弹「是否更新域」提示，
+        点是即自动填充）。本方法已确保 ``updateFields=true`` 正确写入 settings.xml，
+        触发该提示。前提：标题用 add_heading 添加（它设了 outlineLvl，TOC 才收得到）。
         """
         args = [
             "add",
@@ -465,8 +477,8 @@ class DocTool:
         if page_numbers:
             args += ["--prop", "pageNumbers=true"]
         result = self.runner.run(args)
-        # 去掉自动更新域标志，避免 Word 打开弹「域可能引用了其它文件」
-        self._clear_updatefields()
+        # 让 Word 打开时自动刷新 TOC 条目（修正 officecli 缺 w:val="true" 的问题）
+        self._ensure_updatefields()
         return result
 
     # ---- 页眉 / 页脚 ----

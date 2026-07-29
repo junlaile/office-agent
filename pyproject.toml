@@ -46,6 +46,9 @@ LLM_REQUEST_TIMEOUT = "120"
 OFFICECLI_TIMEOUT = "120"
 OUTPUT_DIR = "./output"
 
+# LangGraph 超级步上限（agent↔tools 往返算 2 步，约 100 轮工具）
+RECURSION_LIMIT = "200"
+
 # 日志级别: DEBUG/INFO/WARNING/ERROR（默认 INFO）
 LOG_LEVEL = "INFO"
 

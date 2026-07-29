@@ -56,7 +56,7 @@ class TestDocToolsForwarding:
 
     def test_add_toc_forwards(self, fake_runner, doc_session):
         TOOL_BY_NAME["add_toc"].invoke({"levels": "1-3", "title": "目录"})
-        # add toc（随后会清 updateFields；FakeRunner 无真实 zip，仅断言 toc 调用）
+        # add toc（随后会 ensure updateFields；FakeRunner 无真实 zip，仅断言 toc 调用）
         all_calls = fake_runner.calls
         assert any("toc" in str(c) for c in all_calls)
 
