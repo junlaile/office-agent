@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from langchain_core.tools import tool
 
+from office_agent.log import get_logger
 from office_agent.officecli import (
     OfficeCLIError,
 )
@@ -16,7 +16,7 @@ from office_agent.tools.session import (
     session_doc_kind,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @tool

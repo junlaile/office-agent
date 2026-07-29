@@ -23,7 +23,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -38,6 +37,7 @@ from office_agent.cli.user_input import (
 )
 from office_agent.config import settings
 from office_agent.domain.format import kind_from_path
+from office_agent.log import get_logger
 from office_agent.tools import TOOL_BY_NAME, tools_for_kind
 from office_agent.tools.batching import (
     BATCH_FALLBACK_PREFIX,
@@ -50,7 +50,7 @@ from .llm import get_llm
 from .prompts import build_system_prompt
 from .state import AgentState
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 软收尾阈值：当剩余步数 < 限额的此比例时，触发"尽快 finish"提醒。
 # 0.7 意味着用掉 70% 预算后开始催促收尾，留 30% 余量完成 view_text+finish。

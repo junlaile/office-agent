@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from office_agent.api.stomp_bridge import build_stomp_bridge
-from office_agent.config import setup_logging
+from office_agent.log import setup_logging
 
 
 def main() -> None:

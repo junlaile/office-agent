@@ -6,14 +6,15 @@ Markdown 大纲，供用户批准或提出修改意见。
 
 from __future__ import annotations
 
-import logging
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from office_agent.log import get_logger
+
 from .llm import get_llm
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _OUTLINE_SYSTEM = """\
 你是文档结构规划助手。根据用户需求输出【结构化 Markdown 大纲】，供用户预览批准。

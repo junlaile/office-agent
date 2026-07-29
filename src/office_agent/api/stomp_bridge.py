@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import queue
 import threading
 import time
@@ -15,8 +14,9 @@ from typing import Any, Protocol
 from office_agent.api.session_worker import process_envelope
 from office_agent.api.transport import MessageEnvelope
 from office_agent.config import settings
+from office_agent.log import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

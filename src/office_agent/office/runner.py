@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -21,8 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from office_agent.config import settings
+from office_agent.log import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class OfficeCLIError(RuntimeError):

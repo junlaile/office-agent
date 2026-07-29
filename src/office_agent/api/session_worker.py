@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from office_agent.api import manager as session_manager
 from office_agent.api.transport import MessageEnvelope
+from office_agent.log import get_logger
 from office_agent.session.runner import AgentSession, SessionPhase
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def process_envelope(envelope: MessageEnvelope) -> list[dict[str, Any]]:

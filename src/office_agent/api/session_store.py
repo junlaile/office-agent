@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -11,9 +10,10 @@ from typing import Protocol
 from urllib.parse import urlparse
 
 from office_agent.config import settings
+from office_agent.log import get_logger
 from office_agent.session.runner import AgentSession, SessionPhase
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SessionStore(Protocol):

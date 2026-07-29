@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +22,12 @@ from office_agent.api.openai_compat import (
     models_list_response,
     run_turn,
 )
-from office_agent.config import assert_llm_ready, setup_logging
+from office_agent.config import assert_llm_ready
+from office_agent.log import get_logger, setup_logging
 from office_agent.officecli import OfficeCLIError, resolve_bin
 from office_agent.session.runner import AgentSession, SessionPhase
 
-logger = logging.getLogger("office_agent.api")
+logger = get_logger(__name__)
 
 
 def create_app() -> FastAPI:

@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
 
@@ -20,6 +19,7 @@ from langgraph.types import Command
 
 from office_agent.cli.user_input import get_bridge
 from office_agent.domain.format import infer_doc_kind
+from office_agent.log import get_logger
 from office_agent.officecli import OfficeCLIError, resolve_bin
 from office_agent.session.prep import (
     build_doc_path,
@@ -27,7 +27,7 @@ from office_agent.session.prep import (
     official_header_fields,
 )
 
-logger = logging.getLogger("office_agent.cli.ui")
+logger = get_logger(__name__)
 
 
 def _readline(prompt: str = "") -> str:
