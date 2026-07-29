@@ -3,10 +3,11 @@
 标记 @pytest.mark.integration，默认 skip。
 显式运行：``uv run pytest -m integration -k toc``
 
-验证两件曾经导致"目录显示 Update field to see table of contents"的事：
+验证：
   1. add_heading 写出的段落含 <w:outlineLvl>（让 Word 目录能收录标题）。
-  2. add_toc 后 settings.xml 含 <w:updateFields w:val="true"/>（让 Word
-     打开时弹刷新提示，自动填充目录条目）。
+  2. add_toc 后 settings.xml 【不含】 updateFields=true（避免打开 Word
+     弹「域可能引用了其它文件」提示）。
+  3. 文档仍含 TOC 域，用户可手动更新。
 """
 
 from __future__ import annotations
@@ -59,26 +60,21 @@ def test_toc_field_present(toc_doc):
     assert re.search(r'TOC\s*\\o', xml), "未找到 TOC 域指令"
 
 
-def test_updatefields_has_val_true(toc_doc):
-    """settings.xml 的 updateFields 必须带 w:val="true"。
-
-    officecli 原产出 <w:updateFields />（无 w:val，等同 false）→ Word 不会
-    自动刷新目录。_ensure_updatefields 后处理应补成 w:val="true"。
-    """
+def test_updatefields_cleared(toc_doc):
+    """add_toc 后不应留下 updateFields=true，避免打开弹窗。"""
     xml = _read_xml(toc_doc, "word/settings.xml")
-    assert re.search(r'<w:updateFields\s+w:val="true"\s*/?>', xml), (
-        "updateFields 缺 w:val=\"true\"，Word 打开不会刷新目录"
+    assert not re.search(r"<w:updateFields\b", xml), (
+        "settings.xml 仍含 updateFields，打开 Word 会弹域更新提示"
     )
 
 
-def test_ensure_updatefields_is_idempotent(toc_doc):
-    """重复调用 _ensure_updatefields 不产生重复标签、不破坏文档。"""
+def test_clear_updatefields_is_idempotent(toc_doc):
+    """重复调用 _clear_updatefields 不破坏文档。"""
     tool = DocTool(toc_doc)
-    tool._ensure_updatefields()
+    tool._clear_updatefields()
+    tool._clear_updatefields()
     xml = _read_xml(toc_doc, "word/settings.xml")
-    # 只有一个 updateFields 标签
-    assert len(re.findall(r"<w:updateFields", xml)) == 1
-    # document.xml 仍完好（标题、TOC 都在）
+    assert not re.search(r"<w:updateFields\b", xml)
     doc = _read_xml(toc_doc, "word/document.xml")
     assert "outlineLvl" in doc
     assert re.search(r'TOC\s*\\o', doc)

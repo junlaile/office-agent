@@ -88,7 +88,7 @@ _WORD_BRANCH = """\
 - 配图 → add_image(url_or_path, width, caption)
 
 ### 进阶能力（多页报告推荐用）
-- **目录**: add_toc() — 自动收录所有 add_heading 的标题，多章节报告【建议】加。
+- **目录**: add_toc() — 自动收录所有 add_heading 的标题，多章节报告【建议】加；打开不弹更新域提示，若占位可右键/F9 手动刷新。
 - **页码**: add_page_number() — 页脚居中页码。
 - **页眉**: add_header('文档标题') — 页眉显示文档名/机密标识等。
 - **超链接**: add_hyperlink('显示文字', 'https://...') — 引用外部资料。
