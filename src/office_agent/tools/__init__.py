@@ -25,69 +25,14 @@
 
 from __future__ import annotations
 
-import logging
-
-from office_agent.officecli import DocTool, ExcelTool, OfficeCLIError, PptxTool
-
-logger = logging.getLogger(__name__)
-
-# ============================================================
-# 会话状态（模块级，agent 运行期间唯一）
-# ============================================================
-_session_doc_path: str | None = None
-
-
-def set_session_doc(path: str | None) -> None:
-    """main.py 在启动 agent 前调用，设定本会话的文档路径。
-
-    传 None 清空（供测试 teardown）。
-    """
-    global _session_doc_path
-    _session_doc_path = path
-
-
-def session_doc_path() -> str | None:
-    return _session_doc_path
-
-
-def session_doc_kind() -> str:
-    """返回当前会话的文档类型: 'docx' | 'xlsx' | 'pptx'。
-
-    路径未初始化时抛错；扩展名无法识别时默认 'docx'。
-    """
-    if not _session_doc_path:
-        raise OfficeCLIError("会话文档路径未初始化（请先调用 set_session_doc）")
-    p = _session_doc_path.lower()
-    if p.endswith(".xlsx"):
-        return "xlsx"
-    if p.endswith(".pptx"):
-        return "pptx"
-    return "docx"
-
-
-def _tool():
-    """工厂：按当前会话扩展名返回对应的 Tool 实例。"""
-    if not _session_doc_path:
-        raise OfficeCLIError("会话文档路径未初始化（请先调用 set_session_doc）")
-    kind = session_doc_kind()
-    if kind == "xlsx":
-        return ExcelTool(_session_doc_path)
-    if kind == "pptx":
-        return PptxTool(_session_doc_path)
-    return DocTool(_session_doc_path)
-
-
-def _doc() -> DocTool:
-    """向后兼容：旧代码可能引用 _doc()。"""
-    return _tool()  # type: ignore[return-value]
-
-
-def _wrong_kind_msg(tool_name: str, expected: str, hint: str = "") -> str:
-    """当前会话格式与工具不符时的友好提示（而非 AttributeError 崩溃）。"""
-    actual = session_doc_kind()
-    logger.warning("工具与文档类型不匹配: %s 需要 %s，当前 %s", tool_name, expected, actual)
-    hint_str = f" {hint}" if hint else ""
-    return (f"{tool_name} 是 {expected.upper()} 专属工具，当前文档是 {actual}。{hint_str}").strip()
+from .session import (  # noqa: E402
+    _doc,
+    _tool,
+    _wrong_kind_msg,
+    session_doc_kind,
+    session_doc_path,
+    set_session_doc,
+)
 
 
 # ============================================================
@@ -258,6 +203,29 @@ TOOL_SPECS = [
 
 REGISTRY = ToolRegistry(TOOL_SPECS)
 
+
+def tools_for_kind(kind: str, *, include_vehicle: bool = False):
+    """按文档类型返回绑定给 LLM 的工具子集。
+
+    默认不暴露 query_vehicle（仅在交通类任务显式开启）。
+    历史兼容：未知 kind 回退到 docx。
+    """
+    normalized = str(kind or "").lower()
+    if normalized not in ALL_DOCUMENT_KINDS:
+        normalized = "docx"
+
+    tools = []
+    for spec in TOOL_SPECS:
+        if normalized not in spec.document_kinds:
+            continue
+        # Excel 场景由 set_cells 系列负责表格写入，避免 add_table 误调用。
+        if normalized == "xlsx" and spec.name == "add_table":
+            continue
+        if not include_vehicle and spec.name == "query_vehicle":
+            continue
+        tools.append(spec.tool)
+    return tools
+
 # 兼容既有导入；实际来源统一为注册表。
 ALL_TOOLS = REGISTRY.all_tools
 TOOL_BY_NAME = REGISTRY.tool_by_name
@@ -272,7 +240,6 @@ __all__ = [
     "_tool",
     "_doc",
     "_wrong_kind_msg",
-    "_session_doc_path",
     # 聚合
     "ALL_TOOLS",
     "TOOL_BY_NAME",
@@ -290,6 +257,7 @@ __all__ = [
     "PPTX_TOOLS",
     "CONTROL_TOOLS",
     "tools_for_doc_path",
+    "tools_for_kind",
     # 所有工具（供 from office_agent.tools import X）
     *[t.name for t in ALL_TOOLS],
 ]
