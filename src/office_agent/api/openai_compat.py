@@ -290,6 +290,7 @@ def run_turn(
         session = AgentSession(session_id=sid)
         session_manager.register(session)
         events = list(session.start(user_text))
+        session_manager.register(session)
         return session, events
 
     # 终态后新开一轮（同一 conversation 再提需求）
@@ -301,10 +302,12 @@ def run_turn(
         session = AgentSession()
         session_manager.register(session)
         events = list(session.start(user_text))
+        session_manager.register(session)
         return session, events
 
     msg = user_text_to_message(session, user_text)
     events = list(session.handle(msg))
+    session_manager.register(session)
     return session, events
 
 

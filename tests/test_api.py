@@ -111,3 +111,103 @@ class TestWebSocketProtocol:
                     break
             assert done is not None
             assert "download_url" in done
+
+    def test_reconnect_with_same_session_id(self, client, monkeypatch):
+        c, _ = client
+        graph = MagicMock()
+        graph.stream.return_value = iter([])
+        graph.get_state.return_value = SimpleNamespace(
+            values={"done": False, "summary": ""},
+            tasks=[],
+        )
+        monkeypatch.setattr(
+            "office_agent.agent.graph.build_graph", lambda *a, **k: graph
+        )
+        monkeypatch.setattr(
+            "office_agent.session.runner.pending_interrupt", lambda g, c: None
+        )
+
+        sid = "reconnect-sid"
+        with c.websocket_connect("/api/v1/ws") as ws1:
+            ws1.send_text(
+                json.dumps(
+                    {
+                        "type": "start",
+                        "session_id": sid,
+                        "requirement": "弄点东西",
+                    }
+                )
+            )
+            first = ws1.receive_json()
+            assert first["type"] == "session"
+            assert first["session_id"] == sid
+
+        with c.websocket_connect("/api/v1/ws") as ws2:
+            ws2.send_text(json.dumps({"type": "start", "session_id": sid}))
+            ev = ws2.receive_json()
+            assert ev["type"] == "session"
+            assert ev["reconnected"] is True
+            assert ev["session_id"] == sid
+
+    def test_rabbitmq_memory_broker_end_to_end(self, tmp_path, monkeypatch):
+        from office_agent import config
+        from office_agent.api.stomp_bridge import MemoryBroker, StompBrokerBridge, StompConfig
+        from office_agent.session import prep
+
+        new_settings = dataclasses.replace(
+            config.settings,
+            output_dir=tmp_path,
+            llm_api_key="test-key",
+            transport_mode="rabbitmq_stomp",
+            stomp_use_memory_broker=True,
+        )
+        monkeypatch.setattr(config, "settings", new_settings)
+        monkeypatch.setattr(prep, "settings", new_settings)
+
+        graph = MagicMock()
+        graph.stream.return_value = iter([])
+        graph.get_state.return_value = SimpleNamespace(
+            values={"done": True, "summary": "ok"},
+            tasks=[],
+        )
+        monkeypatch.setattr(
+            "office_agent.agent.graph.build_graph", lambda *a, **k: graph
+        )
+        monkeypatch.setattr(
+            "office_agent.session.runner.pending_interrupt", lambda g, c: None
+        )
+
+        def _build():
+            cfg = StompConfig(
+                host="127.0.0.1",
+                port=61613,
+                login="guest",
+                passcode="guest",
+                vhost="/",
+                inbound_destination="/queue/office-agent.inbound",
+                outbound_destination="/queue/office-agent.outbound",
+                dlq_destination="/queue/office-agent.dlq",
+                exchange="office-agent",
+                routing_key="session",
+                heartbeat_ms=10000,
+                max_retries=1,
+                retry_delay_ms=0,
+                use_memory_broker=True,
+            )
+            return StompBrokerBridge(cfg, broker=MemoryBroker())
+
+        monkeypatch.setattr("office_agent.api.app.build_stomp_bridge", _build)
+        app = create_app()
+        with TestClient(app) as c:
+            with c.websocket_connect("/api/v1/ws") as ws:
+                ws.send_text(
+                    json.dumps({"type": "start", "requirement": "弄点东西"})
+                )
+                types = []
+                for _ in range(10):
+                    ev = ws.receive_json()
+                    types.append(ev["type"])
+                    if ev["type"] in ("need_kind", "error", "done"):
+                        break
+                assert "session" in types or "need_kind" in types
+

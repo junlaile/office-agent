@@ -55,6 +55,36 @@ class Settings:
     # Agent
     recursion_limit: int  # LangGraph 超级步上限（agent↔tools 往返算 2 步）
 
+    # Session store
+    session_backend: str  # memory/mysql
+    session_ttl_seconds: int
+    mysql_dsn: str
+    mysql_host: str
+    mysql_port: int
+    mysql_user: str
+    mysql_password: str
+    mysql_database: str
+    mysql_connect_timeout: int
+    mysql_read_timeout: int
+    mysql_write_timeout: int
+
+    # Transport
+    transport_mode: str  # inproc/rabbitmq_stomp
+    rabbitmq_host: str
+    rabbitmq_port: int
+    rabbitmq_login: str
+    rabbitmq_passcode: str
+    rabbitmq_vhost: str
+    stomp_inbound_destination: str
+    stomp_outbound_destination: str
+    stomp_dlq_destination: str
+    stomp_exchange: str
+    stomp_routing_key: str
+    stomp_heartbeat_ms: int
+    stomp_max_retries: int
+    stomp_retry_delay_ms: int
+    stomp_use_memory_broker: bool
+
     # 日志
     log_level: str  # DEBUG/INFO/WARNING/ERROR
 
@@ -109,6 +139,39 @@ def _load() -> Settings:
         officecli_timeout=int_env("OFFICECLI_TIMEOUT", 120),
         output_dir=output_dir,
         recursion_limit=int_env("RECURSION_LIMIT", 100),
+        session_backend=env("SESSION_BACKEND", "memory"),
+        session_ttl_seconds=int_env("SESSION_TTL_SECONDS", 86400),
+        mysql_dsn=env("MYSQL_DSN", ""),
+        mysql_host=env("MYSQL_HOST", "127.0.0.1"),
+        mysql_port=int_env("MYSQL_PORT", 3306),
+        mysql_user=env("MYSQL_USER", ""),
+        mysql_password=env("MYSQL_PASSWORD", ""),
+        mysql_database=env("MYSQL_DATABASE", "office_agent"),
+        mysql_connect_timeout=int_env("MYSQL_CONNECT_TIMEOUT", 5),
+        mysql_read_timeout=int_env("MYSQL_READ_TIMEOUT", 15),
+        mysql_write_timeout=int_env("MYSQL_WRITE_TIMEOUT", 15),
+        transport_mode=env("TRANSPORT_MODE", "inproc"),
+        rabbitmq_host=env("RABBITMQ_HOST", "127.0.0.1"),
+        rabbitmq_port=int_env("RABBITMQ_PORT", 61613),
+        rabbitmq_login=env("RABBITMQ_LOGIN", "guest"),
+        rabbitmq_passcode=env("RABBITMQ_PASSCODE", "guest"),
+        rabbitmq_vhost=env("RABBITMQ_VHOST", "/"),
+        stomp_inbound_destination=env(
+            "STOMP_INBOUND_DESTINATION", "/queue/office-agent.inbound"
+        ),
+        stomp_outbound_destination=env(
+            "STOMP_OUTBOUND_DESTINATION", "/queue/office-agent.outbound"
+        ),
+        stomp_dlq_destination=env(
+            "STOMP_DLQ_DESTINATION", "/queue/office-agent.dlq"
+        ),
+        stomp_exchange=env("STOMP_EXCHANGE", "office-agent"),
+        stomp_routing_key=env("STOMP_ROUTING_KEY", "session"),
+        stomp_heartbeat_ms=int_env("STOMP_HEARTBEAT_MS", 10000),
+        stomp_max_retries=int_env("STOMP_MAX_RETRIES", 3),
+        stomp_retry_delay_ms=int_env("STOMP_RETRY_DELAY_MS", 200),
+        stomp_use_memory_broker=env("STOMP_USE_MEMORY_BROKER", "").lower()
+        in ("1", "true", "yes"),
         log_level=env("LOG_LEVEL", "INFO"),
     )
 
